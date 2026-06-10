@@ -3,6 +3,7 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
 
 SENSOR_SCHEMA = StructType(
@@ -15,3 +16,17 @@ SENSOR_SCHEMA = StructType(
         StructField("unit", StringType(), True),
     ]
 )
+
+ANOMALY_OUTPUT_SCHEMA = StructType(
+    [
+        StructField("site_id", StringType(), False),
+        StructField("pollutant_type", StringType(), False),
+        StructField("event_time", TimestampType(), False),
+        StructField("concentration", DoubleType(), False),
+        StructField("metric_value", DoubleType(), False),
+        StructField("metric_name", StringType(), False),
+    ]
+)
+
+EMA_STATE_SCHEMA = "ema double"
+CUSUM_STATE_SCHEMA = "cusum double"

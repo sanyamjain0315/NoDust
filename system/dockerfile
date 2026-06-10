@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y default-jdk && apt-get clean
-RUN pip install pyyaml pyspark==4.1.1
+RUN pip install pyyaml pandas pyarrow pyspark==4.1.1
 ENV PYSPARK_SUBMIT_ARGS="--packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1 pyspark-shell"
 COPY . .
 CMD ["python", "dataflow.py"]
