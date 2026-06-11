@@ -34,7 +34,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SITE_IDS: SITE_01,SITE_02,SITE_03,SITE_04,SITE_05
-      SLEEP_MS: 800
+      SLEEP_MS: 100
       STDDEV_MS: 200
       TOPIC: site-sensor-raw
     deploy:
