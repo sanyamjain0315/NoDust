@@ -23,81 +23,6 @@ def _load_thresholds(config_path: str) -> dict[str, float]:
     }
 
 
-def _stateful_anomalies(
-    parsed_dataframe: DataFrame,
-    state_fn: Callable,
-    state_struct_type: str,
-) -> DataFrame:
-    """Run per-(site, pollutant) stateful detection and emit alert rows."""
-    watermarked = parsed_dataframe.select(
-        "site_id",
-        "pollutant_type",
-        "event_time",
-        "concentration",
-    ).withWatermark("event_time", "2 minutes")
-
-    return watermarked.groupBy("site_id", "pollutant_type").applyInPandasWithState(
-        state_fn,
-        outputStructType=ANOMALY_OUTPUT_SCHEMA,
-        stateStructType=state_struct_type,
-        outputMode="append",
-        timeoutConf=GroupStateTimeout.EventTimeTimeout,
-    )
-
-
-def _make_cusum_fn(
-    thresholds: dict[str, float],
-    slack: float,
-    decision_interval: float,
-    metric_name: str,
-) -> Callable:
-    def cusum_fn(
-        key: tuple,
-        pdf_iter: Iterator[pd.DataFrame],
-        state: GroupState,
-    ) -> Iterator[pd.DataFrame]:
-        site_id = str(key[0])
-        pollutant_type = str(key[1])
-        limit = thresholds[pollutant_type]
-        if limit is None:
-            return
-
-        cusum = state.get[0] if state.exists else 0.0
-
-        for pdf in pdf_iter:
-            if pdf.empty:
-                if state.hasTimedOut:
-                    state.remove()
-                continue
-
-            pdf = pdf.sort_values("event_time")
-            alerts: list[dict] = []
-            for row in pdf.itertuples(index=False):
-                conc = float(row.concentration)
-                # One-sided upper CUSUM: accumulate excess above limit + slack.
-                cusum = max(0.0, cusum + conc - limit - slack)
-
-                if cusum > decision_interval:
-                    alerts.append(
-                        {
-                            "site_id": site_id,
-                            "pollutant_type": pollutant_type,
-                            "event_time": row.event_time,
-                            "concentration": conc,
-                            "metric_value": cusum,
-                            "metric_name": metric_name,
-                        }
-                    )
-
-                state.update((cusum,))
-                state.setTimeoutDuration("2 minutes")
-
-            if alerts:
-                yield pd.DataFrame(alerts)
-
-    return cusum_fn
-
-
 class Thresholding:
     """Windowed mean thresholding over a 1-minute tumbling window."""
 
@@ -141,7 +66,11 @@ class EMAThresholding:
         self.output_mode = output_mode
 
     def _make_state_fn(
-        self, thresholds: dict[str, float], alpha: float, metric_name: str, timeout: int=120000
+        self,
+        thresholds: dict[str, float],
+        alpha: float,
+        metric_name: str,
+        timeout: int = 120000,
     ) -> Callable:
         def _state_fn(
             key: tuple, pdf_iter: Iterator[pd.DataFrame], state: GroupState
@@ -173,9 +102,9 @@ class EMAThresholding:
                         alerts.append(
                             {
                                 "site_id": site_id,
-                                "pollutant_type": pollutant_type,
                                 "event_time": row.event_time,
                                 "concentration": conc,
+                                "pollutant_type": pollutant_type,
                                 "metric_value": ema,
                                 "metric_name": metric_name,
                             }
@@ -215,19 +144,87 @@ class CUSUMThresholding:
         config_path: str = "thresholds.yaml",
         slack: float = 2.0,
         decision_interval: float = 50.0,
+        watermark_duration: str = "2 minutes",
+        output_mode: str = "append",
     ):
         self.thresholds = _load_thresholds(config_path)
         self.slack = slack
         self.decision_interval = decision_interval
-        self._state_fn = _make_cusum_fn(
-            self.thresholds,
-            self.slack,
-            self.decision_interval,
-            "cusum",
-        )
+        self.watermark_duration = watermark_duration
+        self.output_mode = output_mode
+
+    def _make_state_fn(
+        self,
+        thresholds: dict[str, float],
+        slack: float,
+        decision_interval: float,
+        metric_name: str,
+        timeout: int = 120000,
+    ) -> Callable:
+        def state_fn(
+            key: tuple,
+            pdf_iter: Iterator[pd.DataFrame],
+            state: GroupState,
+        ) -> Iterator[pd.DataFrame]:
+            site_id = str(key[0])
+            pollutant_type = str(key[1])
+            limit = thresholds[pollutant_type]
+            if limit is None:
+                return
+
+            cusum = state.get[0] if state.exists else 0.0
+
+            for pdf in pdf_iter:
+                if pdf.empty:
+                    if state.hasTimedOut:
+                        state.remove()
+                    continue
+
+                pdf = pdf.sort_values("event_time")
+                alerts: list[dict] = []
+                for row in pdf.itertuples(index=False):
+                    conc = float(row.concentration)
+                    # One-sided upper CUSUM: accumulate excess above limit + slack.
+                    cusum = max(0.0, cusum + conc - limit - slack)
+
+                    if cusum > decision_interval:
+                        alerts.append(
+                            {
+                                "site_id": site_id,
+                                "event_time": row.event_time,
+                                "concentration": conc,
+                                "pollutant_type": pollutant_type,
+                                "metric_value": cusum,
+                                "metric_name": metric_name,
+                            }
+                        )
+
+                    state.update((cusum,))
+
+                state.setTimeoutDuration(timeout)
+
+                if alerts:
+                    yield pd.DataFrame(alerts)
+
+        return state_fn
 
     def get_anomalies(self, parsed_dataframe: DataFrame) -> DataFrame:
-        return _stateful_anomalies(parsed_dataframe, self._state_fn, CUSUM_STATE_SCHEMA)
+        watermarked = parsed_dataframe.select(
+            "site_id",
+            "pollutant_type",
+            "event_time",
+            "concentration",
+        ).withWatermark("event_time", self.watermark_duration)
+
+        return watermarked.groupBy("site_id", "pollutant_type").applyInPandasWithState(
+            self._make_state_fn(
+                self.thresholds, self.slack, self.decision_interval, "cusum"
+            ),
+            outputStructType=ANOMALY_OUTPUT_SCHEMA,
+            stateStructType=CUSUM_STATE_SCHEMA,
+            outputMode=self.output_mode,
+            timeoutConf=GroupStateTimeout.ProcessingTimeTimeout,
+        )
 
 
 ALGORITHM_REGISTERY = {
