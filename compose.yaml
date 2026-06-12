@@ -18,6 +18,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 4
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 10s
@@ -46,6 +47,8 @@ services:
     build:
       context: ./system
       dockerfile: Dockerfile
+    ports:
+      - 4040:4040
     depends_on:
       kafka:
         condition: service_healthy
@@ -55,7 +58,8 @@ services:
       SENSOR_TOPIC: site-sensor-raw
       ALERTS_TOPIC: alerts
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      ALGORITHM: CUSUMThresholding
+      ALGORITHM: EMAThresholding
+      PYSPARK_SUBMIT_ARGS: --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1 pyspark-shell
     deploy:
       mode: replicated
       replicas: 1
