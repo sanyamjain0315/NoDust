@@ -11,9 +11,9 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, window
 from pyspark.sql.streaming.state import GroupState, GroupStateTimeout
 from schemas import ANOMALY_OUTPUT_SCHEMA, CUSUM_STATE_SCHEMA, EMA_STATE_SCHEMA
+from typing import Dict, List, Tuple, Set
 
-
-def _load_thresholds(config_path: str) -> dict[str, float]:
+def _load_thresholds(config_path: str) -> Dict[str, float]:
     with open(config_path, "r") as f:
         raw = yaml.safe_load(f)
     return {
@@ -67,13 +67,13 @@ class EMAThresholding:
 
     def _make_state_fn(
         self,
-        thresholds: dict[str, float],
+        thresholds: Dict[str, float],
         alpha: float,
         metric_name: str,
         timeout: int = 120000,
     ) -> Callable:
         def _state_fn(
-            key: tuple, pdf_iter: Iterator[pd.DataFrame], state: GroupState
+            key: Tuple, pdf_iter: Iterator[pd.DataFrame], state: GroupState
         ) -> Iterator[pd.DataFrame]:
             site_id = str(key[0])
             pollutant_type = str(key[1])
@@ -90,7 +90,7 @@ class EMAThresholding:
                     continue
 
                 pdf = pdf.sort_values("event_time")
-                alerts: list[dict] = []
+                alerts: List[Dict] = []
                 for row in pdf.itertuples(index=False):
                     conc = float(row.concentration)
                     if ema is None:
@@ -155,14 +155,14 @@ class CUSUMThresholding:
 
     def _make_state_fn(
         self,
-        thresholds: dict[str, float],
+        thresholds: Dict[str, float],
         slack: float,
         decision_interval: float,
         metric_name: str,
         timeout: int = 120000,
     ) -> Callable:
         def state_fn(
-            key: tuple,
+            key: Tuple,
             pdf_iter: Iterator[pd.DataFrame],
             state: GroupState,
         ) -> Iterator[pd.DataFrame]:
@@ -181,7 +181,7 @@ class CUSUMThresholding:
                     continue
 
                 pdf = pdf.sort_values("event_time")
-                alerts: list[dict] = []
+                alerts: List[Dict] = []
                 for row in pdf.itertuples(index=False):
                     conc = float(row.concentration)
                     # One-sided upper CUSUM: accumulate excess above limit + slack.
