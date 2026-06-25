@@ -3,15 +3,21 @@ dataframe and return a dataframe of anomalies (timestamp, site, pollutant \
 type and possibly concentration).
 """
 
-from typing import Callable, Iterator
+import os
+from typing import Callable, Dict, Iterator, List, Tuple
 
 import pandas as pd
 import yaml
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, window
 from pyspark.sql.streaming.state import GroupState, GroupStateTimeout
-from schemas import ANOMALY_OUTPUT_SCHEMA, CUSUM_STATE_SCHEMA, EMA_STATE_SCHEMA
-from typing import Dict, List, Tuple, Set
+
+from system.schemas import (
+    ANOMALY_OUTPUT_SCHEMA,
+    CUSUM_STATE_SCHEMA,
+    EMA_STATE_SCHEMA,
+)
+
 
 def _load_thresholds(config_path: str) -> Dict[str, float]:
     with open(config_path, "r") as f:
@@ -23,15 +29,21 @@ def _load_thresholds(config_path: str) -> Dict[str, float]:
     }
 
 
-class Thresholding:
-    """Windowed mean thresholding over a 1-minute tumbling window."""
-
-    def __init__(self, config_path: str = "thresholds.yaml"):
+class BaseAlgorithm:
+    def __init__(self, config_path: os.PathLike | str = "thresholds.yaml"):
         self.thresholds = _load_thresholds(config_path)
 
+
+class Thresholding(BaseAlgorithm):
+    """Windowed mean thresholding over a 1-minute tumbling window."""
+
+    def __init__(self, config_path: os.PathLike | str = "thresholds.yaml"):
+        super().__init__(config_path)
+    
     def get_anomalies(self, parsed_dataframe: DataFrame) -> DataFrame:
         windowed_aggs = (
-            parsed_dataframe.withWatermark("event_time", "2 minutes")
+            parsed_dataframe
+            .withWatermark("event_time", "2 minutes")
             .groupBy(
                 window(col("event_time"), "1 minute"),
                 col("pollutant_type"),
@@ -50,17 +62,17 @@ class Thresholding:
         return windowed_aggs.filter(filter_expr)
 
 
-class EMAThresholding:
+class EMAThresholding(BaseAlgorithm):
     """Exponential moving average (EMA) thresholding per site and pollutant."""
 
     def __init__(
         self,
-        config_path: str = "thresholds.yaml",
+        config_path: os.PathLike | str = "thresholds.yaml",
         alpha: float = 0.3,
         watermark_duration: str = "1 hours",
         output_mode: str = "append",
     ):
-        self.thresholds = _load_thresholds(config_path)
+        super().__init__(config_path)
         self.alpha = alpha
         self.watermark_duration = watermark_duration
         self.output_mode = output_mode
@@ -99,16 +111,14 @@ class EMAThresholding:
                         ema = alpha * conc + (1.0 - alpha) * ema
 
                     if ema > limit:
-                        alerts.append(
-                            {
-                                "site_id": site_id,
-                                "event_time": row.event_time,
-                                "concentration": conc,
-                                "pollutant_type": pollutant_type,
-                                "metric_value": ema,
-                                "metric_name": metric_name,
-                            }
-                        )
+                        alerts.append({
+                            "site_id": site_id,
+                            "event_time": row.event_time,
+                            "concentration": conc,
+                            "pollutant_type": pollutant_type,
+                            "metric_value": ema,
+                            "metric_name": metric_name,
+                        })
 
                     state.update((ema,))
 
@@ -127,7 +137,9 @@ class EMAThresholding:
             "concentration",
         ).withWatermark("event_time", self.watermark_duration)
 
-        return watermarked.groupBy("site_id", "pollutant_type").applyInPandasWithState(
+        return watermarked.groupBy(
+            "site_id", "pollutant_type"
+        ).applyInPandasWithState(
             self._make_state_fn(self.thresholds, self.alpha, "ema"),
             outputStructType=ANOMALY_OUTPUT_SCHEMA,
             stateStructType=EMA_STATE_SCHEMA,
@@ -136,18 +148,18 @@ class EMAThresholding:
         )
 
 
-class CUSUMThresholding:
+class CUSUMThresholding(BaseAlgorithm):
     """Cumulative sum (CUSUM) control chart for sustained threshold exceedances."""
 
     def __init__(
         self,
-        config_path: str = "thresholds.yaml",
+        config_path: os.PathLike | str = "thresholds.yaml",
         slack: float = 2.0,
         decision_interval: float = 50.0,
         watermark_duration: str = "2 minutes",
         output_mode: str = "append",
     ):
-        self.thresholds = _load_thresholds(config_path)
+        super().__init__(config_path)
         self.slack = slack
         self.decision_interval = decision_interval
         self.watermark_duration = watermark_duration
@@ -188,16 +200,14 @@ class CUSUMThresholding:
                     cusum = max(0.0, cusum + conc - limit - slack)
 
                     if cusum > decision_interval:
-                        alerts.append(
-                            {
-                                "site_id": site_id,
-                                "event_time": row.event_time,
-                                "concentration": conc,
-                                "pollutant_type": pollutant_type,
-                                "metric_value": cusum,
-                                "metric_name": metric_name,
-                            }
-                        )
+                        alerts.append({
+                            "site_id": site_id,
+                            "event_time": row.event_time,
+                            "concentration": conc,
+                            "pollutant_type": pollutant_type,
+                            "metric_value": cusum,
+                            "metric_name": metric_name,
+                        })
 
                     state.update((cusum,))
 
@@ -216,7 +226,9 @@ class CUSUMThresholding:
             "concentration",
         ).withWatermark("event_time", self.watermark_duration)
 
-        return watermarked.groupBy("site_id", "pollutant_type").applyInPandasWithState(
+        return watermarked.groupBy(
+            "site_id", "pollutant_type"
+        ).applyInPandasWithState(
             self._make_state_fn(
                 self.thresholds, self.slack, self.decision_interval, "cusum"
             ),

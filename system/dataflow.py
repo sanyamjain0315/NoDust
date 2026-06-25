@@ -1,51 +1,64 @@
 import os
+from typing import Literal
 
-from algorithms import ALGORITHM_REGISTERY
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
-from schemas import SENSOR_SCHEMA
 
-BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
-INPUT_TOPIC = os.getenv("SENSOR_TOPIC", "site-sensor-raw")
-OUTPUT_TOPIC = os.getenv("ALERTS_TOPIC", "alerts")
-ALGORITHM = os.getenv("ALGORITHM", "Thresholding")
+from system.algorithms import ALGORITHM_REGISTERY
+from system.schemas import SENSOR_SCHEMA
 
-spark = SparkSession.builder.appName(
-    "SensorAnomalyDetection"
-).getOrCreate()
 
-Algorithm = ALGORITHM_REGISTERY[ALGORITHM]
-algorithm = Algorithm()
+def run_dataflow(
+    appname: str,
+    kafka_bootstrap_servers: str,
+    input_topic: str,
+    output_topic: str,
+    algorithm_str: Literal[
+        "Thresholding", "EMAThresholding", "CUSUMThresholding"
+    ] = "Thersholding",
+    output_mode: Literal["append", "complete", "update"] = "append",
+    checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
+) -> bool:
+    # Connecting to spark session
+    spark = SparkSession.builder.appName(appname).getOrCreate()
 
-df = (
-    spark.readStream.format("kafka")
-    .option("kafka.bootstrap.servers", BOOTSTRAP_SERVERS)
-    .option("subscribe", INPUT_TOPIC)
-    .option("startingOffsets", "earliest")
-    .load()
-)
+    # Getting requested algorithm
+    Algorithm = ALGORITHM_REGISTERY[algorithm_str]
+    algorithm = Algorithm(config_path="system/thresholds.yaml")
 
-parsed = (
-    df.selectExpr("CAST(value AS STRING)")
-    .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
-    .select("data.*")
-    .withColumn("event_time", col("timestamp").cast("timestamp"))
-)
-
-# Apply anomaly detection algorithm
-anomalies = algorithm.get_anomalies(parsed)
-
-# Write Alerts to Kafka
-query = (
-    anomalies.selectExpr(
-        "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
+    # Ingestion and processing from kafka topic
+    df = (
+        spark.readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .option("subscribe", input_topic)
+        .option("startingOffsets", "earliest")
+        .load()
     )
-    .writeStream.format("kafka")
-    .option("kafka.bootstrap.servers", BOOTSTRAP_SERVERS)
-    .option("topic", OUTPUT_TOPIC)
-    .option("checkpointLocation", "/tmp/checkpoints")
-    .outputMode("append")
-    .start()
-)
 
-query.awaitTermination()
+    parsed = (
+        df
+        .selectExpr("CAST(value AS STRING)")
+        .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
+        .select("data.*")
+        .withColumn("event_time", col("timestamp").cast("timestamp"))
+    )
+
+    # Apply anomaly detection algorithm
+    anomalies = algorithm.get_anomalies(parsed)
+
+    # Write Alerts to Kafka
+    query = (
+        anomalies
+        .selectExpr(
+            "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
+        )
+        .writeStream.format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .option("topic", output_topic)
+        .option("checkpointLocation", checkpoint_location)
+        .outputMode(output_mode)
+        .start()
+    )
+
+    return query.awaitTermination()

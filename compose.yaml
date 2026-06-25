@@ -45,7 +45,7 @@ services:
 
   spark-master:
     build:
-      context: ./system
+      context: ./
       dockerfile: Dockerfile
     container_name: spark-master
     environment:
@@ -60,7 +60,7 @@ services:
 
   spark-worker-1:
     build:
-      context: ./system
+      context: ./
       dockerfile: Dockerfile
     container_name: spark-worker-1
     environment:
@@ -80,7 +80,7 @@ services:
 
   spark-worker-2:
     build:
-      context: ./system
+      context: ./
       dockerfile: Dockerfile
     container_name: spark-worker-2
     environment:
@@ -100,7 +100,7 @@ services:
 
   dataflow:
     build:
-      context: ./system
+      context: ./
       dockerfile: Dockerfile
     depends_on:
       kafka:
@@ -114,8 +114,8 @@ services:
       spark-worker-2:
         condition: service_started
     volumes:
-      - ./system:/opt/spark-apps
-      - ./data:/data
+      - ./system:/opt/spark-apps/system
+      - ./main.py:/opt/spark-apps/main.py
     environment:
       SPARK_MODE: submit
       SPARK_MASTER_URL: spark://spark-master:7077
@@ -131,7 +131,7 @@ services:
       --executor-memory 1G
       --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
       --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
-      /opt/spark-apps/dataflow.py
+      /opt/spark-apps/main.py
 
 volumes:
     spark-data:
