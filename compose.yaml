@@ -5,6 +5,8 @@ services:
     container_name: kafka
     ports:
       - "9092:9092"
+    volumes:
+      - nodust_kafka_data:/var/lib/kafka/data
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: 'broker,controller'
@@ -56,7 +58,7 @@ services:
       - "4040:4040"
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     volumes:
-      - spark-data:/opt/spark/work-dir
+      - nodust_spark_data:/opt/spark/work-dir
 
   spark-worker-1:
     build:
@@ -76,7 +78,7 @@ services:
         /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
         spark://spark-master:7077
     volumes:
-      - spark-data:/opt/spark/work-dir
+      - nodust_spark_data:/opt/spark/work-dir
 
   spark-worker-2:
     build:
@@ -96,9 +98,68 @@ services:
         /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
         spark://spark-master:7077
     volumes:
-      - spark-data:/opt/spark/work-dir
+      - nodust_spark_data:/opt/spark/work-dir
 
-  dataflow:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=DB
+    ports:
+      - '5432:5432'
+    volumes:
+      - ./local/db:/var/lib/postgresql/data
+      - ./system/database/init.sql:/docker-entrypoint-initdb.d/create_tables.sql
+
+  metrics-dataflow:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      spark-master:
+        condition: service_started
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
+        condition: service_started
+    volumes:
+      - ./system:/opt/spark-apps/system
+      - ./main.py:/opt/spark-apps/main.py
+    environment:
+      SPARK_MODE: submit
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SENSOR_TOPIC: site-sensor-raw
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      POSTGRES_URI: "postgresql+psycopg2://postgres:postgres@postgres:5432/DB"
+    command: >
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      --num-executors 2
+      --executor-cores 1
+      --executor-memory 1G
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
+      --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
+      /opt/spark-apps/main.py --mode metrics
+  
+  daily-rollup:
+    image: postgres:16-alpine
+    depends_on:
+      - postgres
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "
+      echo '0 0 * * * psql -h postgres -U postgres -d DB -c \"CALL compute_daily_averages();\"' > /etc/crontabs/root &&
+      crond -f -d 8
+      "
+  
+  anomaly_dataflow:
     build:
       context: ./
       dockerfile: Dockerfile
@@ -131,7 +192,8 @@ services:
       --executor-memory 1G
       --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
       --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
-      /opt/spark-apps/main.py
+      /opt/spark-apps/main.py --mode anomaly
 
 volumes:
-    spark-data:
+    nodust_kafka_data:
+    nodust_spark_data:

@@ -28,8 +28,7 @@ def run_dataflow(
 
     # Ingestion and processing from kafka topic
     df = (
-        spark.readStream
-        .format("kafka")
+        spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
         .option("subscribe", input_topic)
         .option("startingOffsets", "earliest")
@@ -37,8 +36,7 @@ def run_dataflow(
     )
 
     parsed = (
-        df
-        .selectExpr("CAST(value AS STRING)")
+        df.selectExpr("CAST(value AS STRING)")
         .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
         .select("data.*")
         .withColumn("event_time", col("timestamp").cast("timestamp"))
@@ -49,8 +47,7 @@ def run_dataflow(
 
     # Write Alerts to Kafka
     query = (
-        anomalies
-        .selectExpr(
+        anomalies.selectExpr(
             "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
         )
         .writeStream.format("kafka")
