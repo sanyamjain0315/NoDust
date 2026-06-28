@@ -68,7 +68,7 @@ services:
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_MEMORY: 1500M
       SPARK_WORKER_CORES: 2
     ports:
       - "8081:8081"
@@ -88,7 +88,7 @@ services:
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_MEMORY: 1500M
       SPARK_WORKER_CORES: 2
     ports:
       - "8082:8081"
@@ -113,7 +113,7 @@ services:
       - ./local/db:/var/lib/postgresql/data
       - ./system/database/init.sql:/docker-entrypoint-initdb.d/create_tables.sql
 
-  metrics-dataflow:
+  spark-dataflow:
     build:
       context: ./
       dockerfile: Dockerfile
@@ -122,50 +122,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_started
-      spark-master:
-        condition: service_started
-      spark-worker-1:
-        condition: service_started
-      spark-worker-2:
-        condition: service_started
-    volumes:
-      - ./system:/opt/spark-apps/system
-      - ./main.py:/opt/spark-apps/main.py
-    environment:
-      SPARK_MODE: submit
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SENSOR_TOPIC: site-sensor-raw
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      POSTGRES_URI: "postgresql+psycopg2://postgres:postgres@postgres:5432/DB"
-    command: >
-      /opt/spark/bin/spark-submit
-      --master spark://spark-master:7077
-      --num-executors 2
-      --executor-cores 1
-      --executor-memory 1G
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
-      --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
-      /opt/spark-apps/main.py --mode metrics
-  
-  daily-rollup:
-    image: postgres:16-alpine
-    depends_on:
-      - postgres
-    environment:
-      PGPASSWORD: postgres
-    command: >
-      sh -c "
-      echo '0 0 * * * psql -h postgres -U postgres -d DB -c \"CALL compute_daily_averages();\"' > /etc/crontabs/root &&
-      crond -f -d 8
-      "
-  
-  anomaly_dataflow:
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    depends_on:
-      kafka:
-        condition: service_healthy
       sensor:
         condition: service_started
       spark-master:
@@ -183,16 +139,30 @@ services:
       SENSOR_TOPIC: site-sensor-raw
       ALERTS_TOPIC: alerts
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      POSTGRES_URI: "postgresql+psycopg2://postgres:postgres@postgres:5432/DB"
       ALGORITHM: EMAThresholding
     command: >
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
-      --num-executors 2
+      --num-executors 1
       --executor-cores 1
       --executor-memory 1G
+      --driver-memory 512m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
       --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
-      /opt/spark-apps/main.py --mode anomaly
+      /opt/spark-apps/main.py --mode all
+
+  daily-rollup:
+    image: postgres:16-alpine
+    depends_on:
+      - postgres
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "
+      echo '0 0 * * * psql -h postgres -U postgres -d DB -c \"CALL compute_daily_averages();\"' > /etc/crontabs/root &&
+      crond -f -d 8
+      "
 
 volumes:
     nodust_kafka_data:

@@ -1,9 +1,9 @@
 import os
-from typing import Literal
+from typing import Literal, Optional
 
-import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import avg, col, from_json, window
+from pyspark.sql.streaming import StreamingQuery
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -11,7 +11,8 @@ from system.schemas import SENSOR_SCHEMA
 
 # PostgreSQL connection string (Ideally fetched from environment variables)
 DB_URI = os.getenv(
-    "POSTGRES_URI", "postgresql+psycopg2://user:password@localhost:5432/your_db"
+    "POSTGRES_URI",
+    "postgresql+psycopg2://user:password@localhost:5432/your_db",
 )
 
 
@@ -69,13 +70,32 @@ def run_dataflow(
     input_topic: str,
     output_mode: Literal["append", "complete", "update"] = "update",
     checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
-) -> bool:
+    spark: Optional[SparkSession] = None,
+) -> StreamingQuery:
+    """
+    Build and start the metrics streaming query.
 
-    spark = SparkSession.builder.appName(appname).getOrCreate()
+    If `spark` is provided it will be reused; otherwise a new SparkSession
+    is created. The function returns the started `StreamingQuery` *without*
+    awaiting termination so that multiple queries can run concurrently on
+    the same SparkSession.
+    """
+    if spark is None:
+        spark = (
+            SparkSession.builder.appName(appname).getOrCreate()
+        )
+
+    # Supressing logging
+    spark.sparkContext.setLogLevel("WARN")  # Options: WARN, ERROR, OFF
+    log4jLogger = spark._jvm.org.apache.log4j
+    log_manager = log4jLogger.LogManager
+    logger = log_manager.getRootLogger()
+    logger.setLevel(log4jLogger.Level.WARN)
 
     # Ingestion and processing from kafka topic
     df = (
-        spark.readStream.format("kafka")
+        spark.readStream
+        .format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
         .option("subscribe", input_topic)
         .option("startingOffsets", "earliest")
@@ -83,7 +103,8 @@ def run_dataflow(
     )
 
     parsed = (
-        df.selectExpr("CAST(value AS STRING)")
+        df
+        .selectExpr("CAST(value AS STRING)")
         .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
         .select("data.*")
         .withColumn("event_time", col("timestamp").cast("timestamp"))
@@ -93,7 +114,8 @@ def run_dataflow(
 
     # Aggregation logic: 1-hour tumbling windows
     hourly_averages = (
-        parsed.groupBy(
+        parsed
+        .groupBy(
             window(col("event_time"), "1 hour").alias("time_window"),
             col("site_id"),
             col("pollutant_type"),
@@ -110,11 +132,11 @@ def run_dataflow(
 
     # Write stream to PostgreSQL using foreachBatch
     query = (
-        hourly_averages.writeStream.outputMode(output_mode)
+        hourly_averages.writeStream
+        .outputMode(output_mode)
         .foreachBatch(write_to_postgres)
         .option("checkpointLocation", checkpoint_location)
         .start()
     )
 
-    query.awaitTermination()
-    return True
+    return query
