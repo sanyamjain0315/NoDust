@@ -36,9 +36,10 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      NUM_SITES: 10
-      SLEEP_MS: 100
-      STDDEV_MS: 200
+      NUM_SITES: 1
+      SLEEP_MS: 0
+      STDDEV_MS: 0
+      EVENT_TIMESTAMP_RATE_MS: 1000
       TOPIC: site-sensor-raw
     deploy:
       mode: replicated
@@ -104,14 +105,14 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=password
       - POSTGRES_DB=DB
     ports:
       - '5432:5432'
     volumes:
-      - ./local/db:/var/lib/postgresql/data
-      - ./system/database/init.sql:/docker-entrypoint-initdb.d/create_tables.sql
+      # - ./local/db:/var/lib/postgresql/data
+      - ./system/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    # command: ["postgres", "-c", "log_statement=all"]
 
   spark-dataflow:
     build:
@@ -139,12 +140,12 @@ services:
       SENSOR_TOPIC: site-sensor-raw
       ALERTS_TOPIC: alerts
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      POSTGRES_URI: "postgresql+psycopg2://postgres:postgres@postgres:5432/DB"
+      POSTGRES_URI: "postgresql+psycopg2://postgres:password@postgres:5432/DB"
       ALGORITHM: EMAThresholding
     command: >
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
-      --num-executors 1
+      --num-executors 2
       --executor-cores 1
       --executor-memory 1G
       --driver-memory 512m
@@ -157,10 +158,10 @@ services:
     depends_on:
       - postgres
     environment:
-      PGPASSWORD: postgres
+      PGPASSWORD: password
     command: >
       sh -c "
-      echo '0 0 * * * psql -h postgres -U postgres -d DB -c \"CALL compute_daily_averages();\"' > /etc/crontabs/root &&
+      echo '* * * * * psql -h postgres -U postgres -d DB -c \"CALL compute_daily_averages();\"' > /etc/crontabs/root &&
       crond -f -d 8
       "
 

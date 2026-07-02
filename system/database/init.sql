@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS sensor_averages_hourly (
     PRIMARY KEY (site_id, pollutant_type, start_time)
 );
 
-CREATE TABLE IF NOT EXISTS sensor_metric_averages_daily (
+CREATE TABLE IF NOT EXISTS sensor_averages_daily (
     site_id         VARCHAR(50) NOT NULL,
     pollutant_type  VARCHAR(50) NOT NULL,
     log_date        DATE NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS sensor_metric_averages_daily (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sensor_metrics_site_pollutant 
-ON sensor_metric_averages_daily (site_id, pollutant_type);
+ON sensor_averages_daily (site_id, pollutant_type);
 
 CREATE OR REPLACE FUNCTION enforce_hourly_cap()
 RETURNS TRIGGER AS $$
@@ -48,21 +48,18 @@ EXECUTE FUNCTION enforce_hourly_cap();
 CREATE OR REPLACE PROCEDURE compute_daily_averages()
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO sensor_metric_averages_daily (site_id, pollutant_type, log_date, daily_avg, last_updated_at)
+    INSERT INTO sensor_averages_daily (site_id, pollutant_type, log_date, daily_avg, last_updated_at)
     SELECT 
         site_id, 
         pollutant_type, 
-        (CURRENT_DATE - INTERVAL '1 day')::DATE AS log_date,
+        start_time::DATE AS log_date, -- Dynamically extract the date from the data
         AVG(avg_value) AS daily_avg,
         NOW() AS last_updated_at
     FROM sensor_averages_hourly
-    -- Filters for data belonging to the previous calendar day
-    WHERE start_time >= (CURRENT_DATE - INTERVAL '1 day') 
-      AND start_time < CURRENT_DATE
-    GROUP BY site_id, pollutant_type
-    ON CONFLICT (site_id, pollutant_type, log_date) 
-    DO UPDATE SET 
-        daily_avg = EXCLUDED.daily_avg,
-        last_updated_at = EXCLUDED.last_updated_at;
+    GROUP BY site_id, pollutant_type, start_time::DATE
+    -- ON CONFLICT (site_id, pollutant_type, log_date) 
+    -- DO UPDATE SET 
+    --     daily_avg = EXCLUDED.daily_avg,
+    --     last_updated_at = EXCLUDED.last_updated_at;
 END;
 $$;
