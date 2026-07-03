@@ -161,7 +161,7 @@ def make_message(timestamp: datetime):
 
 
 def jitter_sleep():
-    wait = max(0.1, random.gauss(SLEEP_MS, STDDEV_MS) / 1000.0)
+    wait = max(0.001, random.gauss(SLEEP_MS, STDDEV_MS) / 1000.0)
     time.sleep(wait)
 
 

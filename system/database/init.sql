@@ -56,10 +56,11 @@ BEGIN
         AVG(avg_value) AS daily_avg,
         NOW() AS last_updated_at
     FROM sensor_averages_hourly
+    -- GROUP BY site_id, pollutant_type, start_time::DATE;
     GROUP BY site_id, pollutant_type, start_time::DATE
-    -- ON CONFLICT (site_id, pollutant_type, log_date) 
-    -- DO UPDATE SET 
-    --     daily_avg = EXCLUDED.daily_avg,
-    --     last_updated_at = EXCLUDED.last_updated_at;
+    ON CONFLICT (site_id, pollutant_type, log_date) 
+    DO UPDATE SET 
+        daily_avg = EXCLUDED.daily_avg,
+        last_updated_at = EXCLUDED.last_updated_at;
 END;
 $$;
