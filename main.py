@@ -9,11 +9,7 @@ from system import anomaly_dataflow, metrics_dataflow
 
 def build_spark(appname: str) -> SparkSession:
     """Create the single shared SparkSession used by both streaming queries."""
-    spark = (
-        SparkSession.builder
-        .appName(appname)
-        .getOrCreate()
-    )
+    spark = SparkSession.builder.appName(appname).getOrCreate()
 
     # Suppressing logging
     spark.sparkContext.setLogLevel("WARN")
@@ -42,7 +38,10 @@ def main():
 
     BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
     INPUT_TOPIC = os.getenv("SENSOR_TOPIC", "site-sensor-raw")
-    OUTPUT_TOPIC = os.getenv("ALERTS_TOPIC", "alerts")
+    OUTPUT_TOPIC_INTERNAL = os.getenv(
+        "INTERNAL_ALERTS_TOPIC", "alerts_internal"
+    )
+    OUTPUT_TOPIC_SEVERE = os.getenv("SEVERE_ALERTS_TOPIC", "alerts_severe")
     ALGORITHM = os.getenv("ALGORITHM", "Thresholding")
 
     mode = args.mode
@@ -63,14 +62,17 @@ def main():
         )
 
         print(f"Starting Anomaly Dataflow using {ALGORITHM} algorithm...")
-        anomaly_query = anomaly_dataflow.run_dataflow(
-            appname="SensorAnomalyDetection",
-            kafka_bootstrap_servers=BOOTSTRAP_SERVERS,
-            input_topic=INPUT_TOPIC,
-            output_topic=OUTPUT_TOPIC,
-            algorithm_str=ALGORITHM,
-            checkpoint_location="/tmp/checkpoints/anomaly",
-            spark=spark,
+        anomaly_query_internal, anomaly_query_severe = (
+            anomaly_dataflow.run_dataflow(
+                appname="SensorAnomalyDetection",
+                kafka_bootstrap_servers=BOOTSTRAP_SERVERS,
+                input_topic=INPUT_TOPIC,
+                output_topic_internal=OUTPUT_TOPIC_INTERNAL,
+                output_topic_severe=OUTPUT_TOPIC_SEVERE,
+                algorithm_str=ALGORITHM,
+                checkpoint_location="/tmp/checkpoints/anomaly",
+                spark=spark,
+            )
         )
 
         # Block until either query terminates (e.g. on error). The remaining
@@ -78,7 +80,11 @@ def main():
         try:
             spark.streams.awaitAnyTermination()
         finally:
-            for q in (metrics_query, anomaly_query):
+            for q in (
+                metrics_query,
+                anomaly_query_internal,
+                anomaly_query_severe,
+            ):
                 try:
                     if q.isActive:
                         q.stop()
@@ -90,7 +96,8 @@ def main():
     # --- Single-dataflow modes (kept for backwards compatibility) ---
 
     spark = build_spark(
-        "SensorMetricsAggregation" if mode == "metrics"
+        "SensorMetricsAggregation"
+        if mode == "metrics"
         else "SensorAnomalyDetection"
     )
 
@@ -111,18 +118,27 @@ def main():
 
     if mode == "anomaly":
         print(f"Starting Anomaly Dataflow using {ALGORITHM} algorithm...")
-        query = anomaly_dataflow.run_dataflow(
-            appname="SensorAnomalyDetection",
-            kafka_bootstrap_servers=BOOTSTRAP_SERVERS,
-            input_topic=INPUT_TOPIC,
-            output_topic=OUTPUT_TOPIC,
-            algorithm_str=ALGORITHM,
-            checkpoint_location="/tmp/checkpoints/anomaly",
-            spark=spark,
+        anomaly_query_internal, anomaly_query_severe = (
+            anomaly_dataflow.run_dataflow(
+                appname="SensorAnomalyDetection",
+                kafka_bootstrap_servers=BOOTSTRAP_SERVERS,
+                input_topic=INPUT_TOPIC,
+                output_topic_internal=OUTPUT_TOPIC_INTERNAL,
+                output_topic_severe=OUTPUT_TOPIC_SEVERE,
+                algorithm_str=ALGORITHM,
+                checkpoint_location="/tmp/checkpoints/anomaly",
+                spark=spark,
+            )
         )
         try:
-            query.awaitTermination()
+            spark.streams.awaitAnyTermination()
         finally:
+            for q in (anomaly_query_internal, anomaly_query_severe):
+                try:
+                    if q.isActive:
+                        q.stop()
+                except Exception:
+                    pass
             spark.stop()
         return
 

@@ -72,7 +72,7 @@ services:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_MEMORY: 1500M
-      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_CORES: 3
     ports:
       - "8081:8081"
     depends_on:
@@ -92,7 +92,7 @@ services:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_MEMORY: 1500M
-      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_CORES: 3
     ports:
       - "8082:8081"
     depends_on:
@@ -140,10 +140,11 @@ services:
       SPARK_MODE: submit
       SPARK_MASTER_URL: spark://spark-master:7077
       SENSOR_TOPIC: site-sensor-raw
-      ALERTS_TOPIC: alerts
+      INTERNAL_ALERTS_TOPIC: alerts_internal
+      SEVERE_ALERTS_TOPIC: alerts_severe
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       POSTGRES_URI: "postgresql+psycopg2://postgres:password@postgres:5432/DB"
-      ALGORITHM: EMAThresholding
+      ALGORITHM: Thresholding
     command: >
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077

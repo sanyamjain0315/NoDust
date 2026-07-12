@@ -22,11 +22,7 @@ from system.schemas import (
 def _load_thresholds(config_path: str) -> Dict[str, float]:
     with open(config_path, "r") as f:
         raw = yaml.safe_load(f)
-    return {
-        pollutant: float(threshold)
-        for pollutant, threshold in raw.items()
-        if isinstance(threshold, (int, float))
-    }
+    return {pollutant: categories for pollutant, categories in raw.items()}
 
 
 class BaseAlgorithm:
@@ -39,27 +35,28 @@ class Thresholding(BaseAlgorithm):
 
     def __init__(self, config_path: os.PathLike | str = "thresholds.yaml"):
         super().__init__(config_path)
-    
-    def get_anomalies(self, parsed_dataframe: DataFrame) -> DataFrame:
-        windowed_aggs = (
-            parsed_dataframe
-            .withWatermark("event_time", "2 minutes")
-            .groupBy(
-                window(col("event_time"), "1 minute"),
-                col("pollutant_type"),
-                col("site_id"),
-            )
-            .avg("concentration")
-            .withColumnRenamed("avg(concentration)", "avg_concentration")
-        )
 
-        filter_expr = False
-        for pollutant, threshold in self.thresholds.items():
-            filter_expr |= (col("pollutant_type") == pollutant) & (
-                col("avg_concentration") > threshold
+    def get_anomalies(
+        self, parsed_dataframe: DataFrame
+    ) -> Tuple[DataFrame, DataFrame]:
+        filter_expr_internal_alerts = False
+        for pollutant, categories in self.thresholds.items():
+            filter_expr_internal_alerts |= (
+                col("pollutant_type") == pollutant
+            ) & (
+                (col("concentration") >= categories["orange"]["min"])
+                & (col("concentration") < categories["orange"]["max"])
             )
 
-        return windowed_aggs.filter(filter_expr)
+        filter_expr_severe_alerts = False
+        for pollutant, categories in self.thresholds.items():
+            filter_expr_severe_alerts |= (
+                col("pollutant_type") == pollutant
+            ) & (col("concentration") >= categories["red"]["min"])
+
+        alerts_internal = parsed_dataframe.filter(filter_expr_internal_alerts)
+        alerts_severe = parsed_dataframe.filter(filter_expr_severe_alerts)
+        return alerts_internal, alerts_severe
 
 
 class EMAThresholding(BaseAlgorithm):

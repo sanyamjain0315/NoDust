@@ -1,5 +1,5 @@
 import os
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
@@ -13,14 +13,15 @@ def run_dataflow(
     appname: str,
     kafka_bootstrap_servers: str,
     input_topic: str,
-    output_topic: str,
+    output_topic_internal: str,
+    output_topic_severe: str,
     algorithm_str: Literal[
         "Thresholding", "EMAThresholding", "CUSUMThresholding"
     ] = "Thersholding",
     output_mode: Literal["append", "complete", "update"] = "append",
     checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
     spark: Optional[SparkSession] = None,
-) -> StreamingQuery:
+) -> Tuple[StreamingQuery, StreamingQuery]:
     """
     Build and start the anomaly streaming query.
 
@@ -63,20 +64,42 @@ def run_dataflow(
     )
 
     # Apply anomaly detection algorithm
-    anomalies = algorithm.get_anomalies(parsed)
+    # anomalies = algorithm.get_anomalies(parsed)
+    alerts_internal, alerts_severe = algorithm.get_anomalies(parsed)
+    # CORRECT TILL HERE: we get proper separate alerts for internal and severe category
+    # Each query work separately, but not together.
 
-    # Write Alerts to Kafka
-    query = (
-        anomalies
+    # Write internal alerts
+    query_internal = (
+        alerts_internal
         .selectExpr(
             "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
         )
         .writeStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
-        .option("topic", output_topic)
-        .option("checkpointLocation", checkpoint_location)
+        .option("topic", output_topic_internal)
+        .option(
+            "checkpointLocation",
+            os.path.join(checkpoint_location, "internal_alerts"),
+        )
         .outputMode(output_mode)
         .start()
     )
 
-    return query
+    # Write severe alerts
+    query_severe = (
+        alerts_severe
+        .selectExpr(
+            "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
+        )
+        .writeStream.format("kafka")
+        .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .option("topic", output_topic_severe)
+        .option(
+            "checkpointLocation",
+            os.path.join(checkpoint_location, "severe_alerts"),
+        )
+        .outputMode(output_mode)
+        .start()
+    )
+    return query_internal, query_severe
