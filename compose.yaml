@@ -39,7 +39,9 @@ services:
       NUM_SITES: 1
       SLEEP_MS: 10
       STDDEV_MS: 0
-      EVENT_TIMESTAMP_RATE_MS: 1000
+      EVENT_TIMESTAMP_RATE_MS: 900000
+      METRIC_MEAN: 0
+      METRIC_STD_DEV: 5
       TOPIC: site-sensor-raw
     deploy:
       mode: replicated

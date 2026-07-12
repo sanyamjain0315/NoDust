@@ -15,9 +15,6 @@ from datetime import datetime, timedelta, timezone
 
 from kafka import KafkaProducer
 
-# ------------------------------------------------------------------
-# Configuration (environment variables with sensible defaults)
-# ------------------------------------------------------------------
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "site-sensor-raw")
 
@@ -27,8 +24,8 @@ SITE_IDS = [f"SITE_{i:02d}" for i in range(1, NUM_SITES + 1)]
 SLEEP_MS = int(os.getenv("SLEEP_MS", "800"))  # mean ms between msgs
 STDDEV_MS = int(os.getenv("SLEEP_STDDEV_MS", "200"))  # jitter
 EVENT_TIMESTAMP_RATE_MS = int(
-    os.getenv("EVENT_TIMESTAMP_RATE_MS", "1000")
-)  # In seconds
+    os.getenv("EVENT_TIMESTAMP_RATE_MS", "900000")
+)  # In ms
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,105 +39,63 @@ producer = KafkaProducer(
     linger_ms=10,
 )
 
-# Define baseline vs elevated ranges for realism
+# Unit value by which any sensor metric will go up or down
+METRIC_MEAN = int(os.getenv("METRIC_MEAN", 0))
+METRIC_STD_DEV = int(os.getenv("METRIC_STD_DEV", 1))
+
 POLLUTANTS = {
     "PM2.5": {
-        "base_min": 5,
-        "base_max": 25,
-        "spike_min": 80,
-        "spike_max": 150,
+        "min": 0,
+        "max": 500,
+        "unit": "µg/m³",
     },
-    "NO2": {
-        "base_min": 10,
-        "base_max": 40,
-        "spike_min": 180,
-        "spike_max": 350,
+    "PM10": {
+        "min": 0,
+        "max": 500,
+        "unit": "µg/m³",
     },
-    "SO2": {"base_min": 5, "base_max": 20, "spike_min": 100, "spike_max": 250},
+    # "TEMPERATURE": {
+    #     "min": 20,
+    #     "max": 40,
+    #     "unit": "ºC",
+    # },
+    # "RELATIVE_HUMIDITY": {
+    #     "min": 0,
+    #     "max": 100,
+    #     "unit": "%",
+    # },
 }
 
-# ------------------------------------------------------------------
-# State Management for Realistic Spikes
-# ------------------------------------------------------------------
-# Track the current state of each site to simulate continuity
-# Structure: { "SITE_01": { "PM2.5": { "state": "NORMAL", "current_val": 12.5, "steps_left": 0 } } }
-SITE_STATES = {}
+
+SENSOR_STATES = {}
 
 
 def initialize_states():
-    for site in SITE_IDS:
-        SITE_STATES[site] = {}
-        for pollutant, config in POLLUTANTS.items():
-            SITE_STATES[site][pollutant] = {
-                "state": "NORMAL",
-                "current_val": random.uniform(
-                    config["base_min"], config["base_max"]
-                ),
-                "steps_left": 0,
-                "target_val": 0.0,
+    for site_id in SITE_IDS:
+        SENSOR_STATES[site_id] = {}
+        for metric, limits in POLLUTANTS.items():
+            SENSOR_STATES[site_id][metric] = {
+                "value": random.uniform(limits["min"], limits["max"]),
             }
 
 
-def update_site_concentration(site, pollutant):
-    state_info = SITE_STATES[site][pollutant]
-    config = POLLUTANTS[pollutant]
+def update_site_concentration(site_id, pollutant):
+    state = SENSOR_STATES[site_id][pollutant]
 
-    current = state_info["current_val"]
-    state = state_info["state"]
+    # Changing the value by a few unit measurements
+    new_value = state["value"] + random.randint(
+        -METRIC_STD_DEV, METRIC_STD_DEV
+    )
 
-    if state == "NORMAL":
-        # Small random walk around the baseline
-        current += random.uniform(-2, 2)
-        current = max(config["base_min"], min(current, config["base_max"]))
+    # Clipping to min and max values
+    if new_value < POLLUTANTS[pollutant]["min"]:
+        new_value = POLLUTANTS[pollutant]["min"]
+    elif new_value > POLLUTANTS[pollutant]["max"]:
+        new_value = POLLUTANTS[pollutant]["max"]
 
-        # 1% chance a site triggers a pollution event (spike)
-        if random.random() < 0.01:
-            state_info["state"] = "CLIMBING"
-            state_info["target_val"] = random.uniform(
-                config["spike_min"], config["spike_max"]
-            )
-            # It takes 5 to 15 steps (messages) to reach the peak
-            state_info["steps_left"] = random.randint(5, 15)
-
-    elif state == "CLIMBING":
-        # Gradually step up to the target high value
-        steps = state_info["steps_left"]
-        target = state_info["target_val"]
-        current += (target - current) / steps
-
-        state_info["steps_left"] -= 1
-        if state_info["steps_left"] <= 0:
-            state_info["state"] = "SUSTAINING"
-            # Sustain the high level for 20 to 50 readings
-            state_info["steps_left"] = random.randint(20, 50)
-
-    elif state == "SUSTAINING":
-        # Flucluate slightly while remaining high
-        current += random.uniform(-5, 5)
-        current = max(config["spike_min"], min(current, config["spike_max"]))
-
-        state_info["steps_left"] -= 1
-        if state_info["steps_left"] <= 0:
-            state_info["state"] = "FALLING"
-            state_info["target_val"] = random.uniform(
-                config["base_min"], config["base_max"]
-            )
-            # It takes 10 to 25 steps to cool down back to normal
-            state_info["steps_left"] = random.randint(10, 25)
-
-    elif state == "FALLING":
-        # Gradually step down to the baseline
-        steps = state_info["steps_left"]
-        target = state_info["target_val"]
-        current -= (current - target) / steps
-
-        state_info["steps_left"] -= 1
-        if state_info["steps_left"] <= 0:
-            state_info["state"] = "NORMAL"
-
-    # Save the updated value
-    state_info["current_val"] = round(current, 2)
-    return state_info["current_val"]
+    # Updating value
+    SENSOR_STATES[site_id][pollutant] = {"value": new_value}
+    return new_value
 
 
 def make_message(timestamp: datetime):
@@ -156,12 +111,12 @@ def make_message(timestamp: datetime):
         "timestamp": timestamp.isoformat(),
         "pollutant_type": pollutant,
         "concentration": concentration,
-        "unit": "µg/m³",
+        "unit": POLLUTANTS[pollutant]["unit"],
     }
 
 
 def jitter_sleep():
-    wait = max(0.001, random.gauss(SLEEP_MS, STDDEV_MS) / 1000.0)
+    wait = abs(random.gauss(SLEEP_MS, STDDEV_MS) / 1000.0)
     time.sleep(wait)
 
 
