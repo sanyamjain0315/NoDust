@@ -25,6 +25,7 @@ ANOMALY_OUTPUT_SCHEMA = StructType(
         StructField("concentration", DoubleType(), False),
         StructField("metric_value", DoubleType(), False),
         StructField("metric_name", StringType(), False),
+        StructField("alert_category", StringType(), True),
     ]
 )
 

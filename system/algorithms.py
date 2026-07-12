@@ -31,7 +31,8 @@ class BaseAlgorithm:
 
 
 class Thresholding(BaseAlgorithm):
-    """Windowed mean thresholding over a 1-minute tumbling window."""
+    """Simple Category based thresholding. If any one value fall in the problem
+    categories, they are passed on as alerts"""
 
     def __init__(self, config_path: os.PathLike | str = "thresholds.yaml"):
         super().__init__(config_path)
@@ -69,6 +70,30 @@ class EMAThresholding(BaseAlgorithm):
         watermark_duration: str = "1 hours",
         output_mode: str = "append",
     ):
+        """Initilizing algorithm params for EWMA.
+
+        Args:
+            config_path (os.PathLike | str, optional): Path thresholds yaml file. \
+                Should be of the form \
+                    ```{\
+                            pollutant_type:{\
+                                category[green,yellow,orange,red]:{\
+                                    thresholds[min,max]:value\
+                                }\
+                            }\
+                        }```\
+                Thresholds are min inclusive, max exclusive. Defaults to "thresholds.yaml".
+            alpha (float, optional): Alpha value for exponential average. \
+                Should be between 0 and 1. Decides how much the current value \
+                should be important. \
+                Take higher values if you want more weight on latest values \
+                than the ewma Defaults to 0.3.
+            watermark_duration (str, optional): Duration over which EWMA should\
+                be calculated. Defaults to "1 hours".
+            output_mode (str, optional): Mode in which windows are triggered. \
+                Options are ["append", "complete", "update"]. Doc similar to \
+                    pyspark output modes for windows. Defaults to "append".
+        """
         super().__init__(config_path)
         self.alpha = alpha
         self.watermark_duration = watermark_duration
@@ -86,8 +111,8 @@ class EMAThresholding(BaseAlgorithm):
         ) -> Iterator[pd.DataFrame]:
             site_id = str(key[0])
             pollutant_type = str(key[1])
-            limit = thresholds[pollutant_type]
-            if limit is None:
+            limit_categories = thresholds[pollutant_type]
+            if limit_categories is None:
                 return
 
             ema = state.get[0] if state.exists else None
@@ -100,6 +125,7 @@ class EMAThresholding(BaseAlgorithm):
 
                 pdf = pdf.sort_values("event_time")
                 alerts: List[Dict] = []
+                
                 for row in pdf.itertuples(index=False):
                     conc = float(row.concentration)
                     if ema is None:
@@ -107,7 +133,7 @@ class EMAThresholding(BaseAlgorithm):
                     else:
                         ema = alpha * conc + (1.0 - alpha) * ema
 
-                    if ema > limit:
+                    if ema >= limit_categories['orange']['min'] and ema < limit_categories['orange']['max']:
                         alerts.append({
                             "site_id": site_id,
                             "event_time": row.event_time,
@@ -115,6 +141,17 @@ class EMAThresholding(BaseAlgorithm):
                             "pollutant_type": pollutant_type,
                             "metric_value": ema,
                             "metric_name": metric_name,
+                            "alert_category": "orange",
+                        })
+                    elif ema >= limit_categories['red']['min']:
+                        alerts.append({
+                            "site_id": site_id,
+                            "event_time": row.event_time,
+                            "concentration": conc,
+                            "pollutant_type": pollutant_type,
+                            "metric_value": ema,
+                            "metric_name": metric_name,
+                            "alert_category": "red",
                         })
 
                     state.update((ema,))
@@ -126,7 +163,7 @@ class EMAThresholding(BaseAlgorithm):
 
         return _state_fn
 
-    def get_anomalies(self, parsed_dataframe: DataFrame) -> DataFrame:
+    def get_anomalies(self, parsed_dataframe: DataFrame) -> Tuple[DataFrame, DataFrame]:
         watermarked = parsed_dataframe.select(
             "site_id",
             "pollutant_type",
@@ -134,7 +171,7 @@ class EMAThresholding(BaseAlgorithm):
             "concentration",
         ).withWatermark("event_time", self.watermark_duration)
 
-        return watermarked.groupBy(
+        all_alerts = watermarked.groupBy(
             "site_id", "pollutant_type"
         ).applyInPandasWithState(
             self._make_state_fn(self.thresholds, self.alpha, "ema"),
@@ -143,7 +180,10 @@ class EMAThresholding(BaseAlgorithm):
             outputMode=self.output_mode,
             timeoutConf=GroupStateTimeout.ProcessingTimeTimeout,
         )
-
+        
+        alerts_internal = all_alerts.filter(col("alert_category") == "orange")
+        alerts_severe = all_alerts.filter(col("alert_category") == "red")
+        return alerts_internal, alerts_severe
 
 class CUSUMThresholding(BaseAlgorithm):
     """Cumulative sum (CUSUM) control chart for sustained threshold exceedances."""

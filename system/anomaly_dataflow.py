@@ -64,10 +64,7 @@ def run_dataflow(
     )
 
     # Apply anomaly detection algorithm
-    # anomalies = algorithm.get_anomalies(parsed)
     alerts_internal, alerts_severe = algorithm.get_anomalies(parsed)
-    # CORRECT TILL HERE: we get proper separate alerts for internal and severe category
-    # Each query work separately, but not together.
 
     # Write internal alerts
     query_internal = (
