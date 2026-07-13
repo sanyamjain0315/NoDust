@@ -144,7 +144,7 @@ services:
       SEVERE_ALERTS_TOPIC: alerts_severe
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       POSTGRES_URI: "postgresql+psycopg2://postgres:password@postgres:5432/DB"
-      ALGORITHM: EMAThresholding
+      ALGORITHM: FuzzyThresholding
     command: >
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
