@@ -6,16 +6,19 @@ type and possibly concentration).
 import os
 from typing import Callable, Dict, Iterator, List, Literal, Tuple
 
+import numpy as np
 import pandas as pd
 import yaml
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, window
+from pyspark.sql.functions import col, from_json, lit
 from pyspark.sql.streaming.state import GroupState, GroupStateTimeout
+from xgboost import XGBClassifier
 
 from system.schemas import (
     ANOMALY_OUTPUT_SCHEMA,
     CUSUM_STATE_SCHEMA,
     EMA_STATE_SCHEMA,
+    FORECAST_OUTPUT_SCHEMA,
 )
 
 
@@ -405,8 +408,335 @@ class EMAThresholding(BaseAlgorithm):
         return alerts_internal, alerts_severe
 
 
+class XGBoostForecasting(BaseAlgorithm):
+    """
+    Forecasting of future pollution categories per site over multiple timescales
+    (15 min, 1 hr, 3 hrs) with concurrent real-time hard threshold alerting.
+    """
+
+    def __init__(
+        self,
+        config_path: os.PathLike | str = "thresholds.yaml",
+        watermark_duration: str = "24 hours",
+        output_mode: str = "append",
+    ):
+        super().__init__(config_path)
+        self.watermark_duration = watermark_duration
+        self.output_mode = output_mode
+        self.models: Dict[str, XGBClassifier] = {}
+        self.is_trained = False
+
+    def _determine_category(self, concentration: float, pollutant: str) -> int:
+        if pollutant not in self.thresholds:
+            return 0
+        limits = self.thresholds[pollutant]
+        if concentration >= limits["red"]["min"]:
+            return 2  # Red
+        elif concentration >= limits["orange"]["min"]:
+            return 1  # Orange
+        else:
+            return 0  # Green/Yellow
+
+    def _train_models(self, spark, bootstrap_servers: str, input_topic: str):
+        """Collects 15 days of historical data from Kafka and trains the models."""
+        print(
+            ">>> XGBoost Training Stage: Collecting 15 days of historical data from Kafka..."
+        )
+
+        # Read batch historical data from Kafka
+        from system.schemas import SENSOR_SCHEMA
+
+        raw_historical = (
+            spark.read
+            .format("kafka")
+            .option("kafka.bootstrap.servers", bootstrap_servers)
+            .option("subscribe", input_topic)
+            .option("startingOffsets", "earliest")
+            .load()
+        )
+
+        parsed_hist = (
+            raw_historical
+            .selectExpr("CAST(value AS STRING)")
+            .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
+            .select("data.*")
+            .withColumn("event_time", col("timestamp").cast("timestamp"))
+        )
+
+        # Wait logic for 15 days of data
+        import time
+
+        from pyspark.sql.functions import max as spark_max
+        from pyspark.sql.functions import min as spark_min
+
+        print(">>> Checking Kafka history for 15 days of data...")
+        while True:
+            # Aggregate min and max timestamps using Spark collect
+            time_stats = parsed_hist.select(
+                spark_min("event_time").alias("min_time"),
+                spark_max("event_time").alias("max_time"),
+            ).collect()[0]
+
+            if time_stats.min_time and time_stats.max_time:
+                duration_days = (
+                    time_stats.max_time - time_stats.min_time
+                ).total_seconds() / 86400.0
+                if (
+                    duration_days >= 5.0
+                ):  # DEBUG: CHANGE BACK TO 15 DAYS =======================================================================
+                    print(
+                        f">>> Success: Found {duration_days:.2f} days of data. Proceeding to training."
+                    )
+                    break
+                else:
+                    print(
+                        f">>> Insufficient history: Only {duration_days:.2f}/15.0 days available."
+                    )
+            else:
+                print(
+                    ">>> Topic is empty or event timestamps could not be parsed."
+                )
+
+            print(">>> Waiting 60 seconds before checking Kafka again...")
+            time.sleep(60)
+
+            # Re-read batch snapshot from Kafka to fetch newly arrived offsets
+            raw_historical = (
+                spark.read
+                .format("kafka")
+                .option("kafka.bootstrap.servers", bootstrap_servers)
+                .option("subscribe", input_topic)
+                .option("startingOffsets", "earliest")
+                .load()
+            )
+            parsed_hist = (
+                raw_historical
+                .selectExpr("CAST(value AS STRING)")
+                .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
+                .select("data.*")
+                .withColumn("event_time", col("timestamp").cast("timestamp"))
+            )
+
+        # Convert data to Pandas for local training preparation
+        pdf = parsed_hist.toPandas()
+        if pdf.empty:
+            print(
+                ">>> Warning: Historical Kafka buffer is empty. Skipping training, using empty mock models."
+            )
+            self.is_trained = True
+            return
+
+        pdf["event_time"] = pd.to_datetime(pdf["event_time"])
+
+        # Filter data window to only look at the last 15 days
+        max_time = pdf["event_time"].max()
+        cutoff_time = max_time - pd.Timedelta(days=15)
+        pdf = pdf[pdf["event_time"] >= cutoff_time].copy()
+
+        # Feature Engineering: Normalization & Temporal Decomposition
+        pdf["concentration_norm"] = pdf["concentration"] / 1000.0
+        pdf["hour"] = pdf["event_time"].dt.hour
+        pdf["day_of_week"] = pdf["event_time"].dt.dayofweek
+
+        # Map categorical integers
+        pdf["category"] = pdf.apply(
+            lambda row: self._determine_category(
+                row["concentration"], row["pollutant_type"]
+            ),
+            axis=1,
+        )
+
+        # Group and shift data forwards (15 mins interval based tracking)
+        pdf = pdf.sort_values(
+            by=["site_id", "pollutant_type", "event_time"]
+        ).reset_index(drop=True)
+
+        # Target variables shifted backwards structurally to line up features against future target parameters
+        pdf["target_15m"] = pdf.groupby(["site_id", "pollutant_type"])[
+            "category"
+        ].shift(-1)
+        pdf["target_1hr"] = pdf.groupby(["site_id", "pollutant_type"])[
+            "category"
+        ].shift(-4)
+        pdf["target_3hr"] = pdf.groupby(["site_id", "pollutant_type"])[
+            "category"
+        ].shift(-12)
+
+        features = ["concentration_norm", "hour", "day_of_week"]
+        timescales = {
+            "15min": "target_15m",
+            "1hr": "target_1hr",
+            "3hr": "target_3hr",
+        }
+
+        for name, target_col in timescales.items():
+            valid_df = pdf.dropna(subset=[target_col])
+            X = valid_df[features]
+            y = valid_df[target_col].astype(int)
+
+            # Ensure multi-class classification limits support all boundaries (0, 1, 2)
+            model = XGBClassifier(
+                n_estimators=50,
+                max_depth=4,
+                learning_rate=0.1,
+                objective="multi:softprob",
+                num_class=3,
+            )
+            if not X.empty and len(np.unique(y)) > 1:
+                model.fit(X, y)
+                print(
+                    f">>> Successfully trained XGBoost Model for timescale: {name}"
+                )
+            else:
+                # Fallback if insufficient multi-class variety is met
+                model.fit(
+                    pd.DataFrame([[0.0, 0, 0]], columns=features),
+                    np.array([0]),
+                )
+            self.models[name] = model
+
+        self.is_trained = True
+
+    def _make_inference_and_alert_fn(self) -> Callable:
+        models = self.models
+        thresholds = self.thresholds
+
+        def _process_state(
+            key: Tuple, pdf_iter: Iterator[pd.DataFrame], state: GroupState
+        ) -> Iterator[pd.DataFrame]:
+            site_id, pollutant_type = str(key[0]), str(key[1])
+
+            for pdf in pdf_iter:
+                if pdf.empty:
+                    continue
+
+                pdf = pdf.sort_values("event_time")
+                outputs = []
+
+                for row in pdf.itertuples(index=False):
+                    conc = float(row.concentration)
+                    evt_time = row.event_time
+
+                    # Extract features
+                    c_norm = conc / 1000.0
+                    hr = evt_time.hour
+                    dow = evt_time.dayofweek
+                    feat_df = pd.DataFrame(
+                        [[c_norm, hr, dow]],
+                        columns=["concentration_norm", "hour", "day_of_week"],
+                    )
+
+                    # 1. Hard Threshold Alerts Logic
+                    limits = thresholds.get(pollutant_type, {})
+                    alert_cat = "clean"
+                    if limits:
+                        if conc >= limits["red"]["min"]:
+                            alert_cat = "red"
+                        elif conc >= limits["orange"]["min"]:
+                            alert_cat = "orange"
+
+                    # 2. Machine Learning Predictions
+                    cat_map = {0: "green_yellow", 1: "orange", 2: "red"}
+
+                    for name in ["15min", "1hr", "3hr"]:
+                        model = models.get(name)
+                        pred_cat = "green_yellow"
+                        if model is not None:
+                            try:
+                                pred_idx = int(model.predict(feat_df)[0])
+                                pred_cat = cat_map.get(
+                                    pred_idx, "green_yellow"
+                                )
+                            except Exception:
+                                pass
+
+                        outputs.append({
+                            "site_id": site_id,
+                            "event_time": evt_time,
+                            "pollutant_type": pollutant_type,
+                            "concentration": conc,
+                            "alert_category": alert_cat,
+                            "timescale": name,
+                            "predicted_category": pred_cat,
+                        })
+
+                if outputs:
+                    yield pd.DataFrame(outputs)
+
+        return _process_state
+
+    def get_anomalies(
+        self, parsed_dataframe: DataFrame, **kwargs
+    ) -> Tuple[DataFrame, DataFrame, DataFrame]:
+        spark = parsed_dataframe.sparkSession
+        bootstrap_servers = kwargs.get(
+            "kafka_bootstrap_servers", "kafka:29092"
+        )
+        input_topic = kwargs.get("input_topic", "site-sensor-raw")
+
+        # Trigger offline training loop
+        if not self.is_trained:
+            self._train_models(spark, bootstrap_servers, input_topic)
+
+        watermarked = parsed_dataframe.select(
+            "site_id", "pollutant_type", "event_time", "concentration"
+        ).withWatermark("event_time", self.watermark_duration)
+
+        # Dynamic internal mapping schema containing combined datasets
+        combined_schema = FORECAST_OUTPUT_SCHEMA.add(
+            "alert_category", "string"
+        ).add("concentration", "double")
+
+        processed_stream = watermarked.groupBy(
+            "site_id", "pollutant_type"
+        ).applyInPandasWithState(
+            self._make_inference_and_alert_fn(),
+            outputStructType=combined_schema,
+            stateStructType="dummy double",  # Placeholder state structure
+            outputMode=self.output_mode,
+            timeoutConf=GroupStateTimeout.ProcessingTimeTimeout,
+        )
+
+        # Separate downstream components into target topic allocations
+        alerts_internal = processed_stream.filter(
+            col("alert_category") == "orange"
+        ).select(
+            "site_id",
+            "pollutant_type",
+            "event_time",
+            "concentration",
+            lit(350.0).alias("metric_value"),
+            lit("hard_threshold").alias("metric_name"),
+            col("alert_category"),
+        )
+
+        alerts_severe = processed_stream.filter(
+            col("alert_category") == "red"
+        ).select(
+            "site_id",
+            "pollutant_type",
+            "event_time",
+            "concentration",
+            lit(430.0).alias("metric_value"),
+            lit("hard_threshold").alias("metric_name"),
+            col("alert_category"),
+        )
+
+        forecasts = processed_stream.select(
+            "site_id",
+            "event_time",
+            "pollutant_type",
+            "timescale",
+            "predicted_category",
+        )
+
+        return alerts_internal, alerts_severe, forecasts
+
+
+# Append to Algorithm Registry
 ALGORITHM_REGISTERY = {
     "Thresholding": Thresholding,
     "EMAThresholding": EMAThresholding,
     "FuzzyThresholding": FuzzyThresholding,
+    "XGBoostForecasting": XGBoostForecasting,
 }

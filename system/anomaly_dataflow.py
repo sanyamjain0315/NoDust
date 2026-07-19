@@ -15,13 +15,17 @@ def run_dataflow(
     input_topic: str,
     output_topic_internal: str,
     output_topic_severe: str,
+    output_topic_forecasts: Optional[str] = None,
     algorithm_str: Literal[
-        "Thresholding", "EMAThresholding", "CUSUMThresholding"
-    ] = "Thersholding",
+        "Thresholding",
+        "EMAThresholding",
+        "CUSUMThresholding",
+        "XGBoostForecasting",
+    ] = "Thresholding",
     output_mode: Literal["append", "complete", "update"] = "append",
     checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
     spark: Optional[SparkSession] = None,
-) -> Tuple[StreamingQuery, StreamingQuery]:
+) -> Tuple[StreamingQuery, StreamingQuery, Optional[StreamingQuery]]:
     """
     Build and start the anomaly streaming query.
 
@@ -34,18 +38,11 @@ def run_dataflow(
     if spark is None:
         spark = SparkSession.builder.appName(appname).getOrCreate()
 
-    # Supressing logging
-    spark.sparkContext.setLogLevel("WARN")  # Options: WARN, ERROR, OFF
-    log4jLogger = spark._jvm.org.apache.log4j
-    log_manager = log4jLogger.LogManager
-    logger = log_manager.getRootLogger()
-    logger.setLevel(log4jLogger.Level.WARN)
+    spark.sparkContext.setLogLevel("WARN")
 
-    # Getting requested algorithm
     Algorithm = ALGORITHM_REGISTERY[algorithm_str]
     algorithm = Algorithm(config_path="system/thresholds.yaml")
 
-    # Ingestion and processing from kafka topic
     df = (
         spark.readStream
         .format("kafka")
@@ -63,8 +60,17 @@ def run_dataflow(
         .withColumn("event_time", col("timestamp").cast("timestamp"))
     )
 
-    # Apply anomaly detection algorithm
-    alerts_internal, alerts_severe = algorithm.get_anomalies(parsed)
+    # Resolve algorithm patterns
+    query_forecast = None
+    if algorithm_str == "XGBoostForecasting":
+        alerts_internal, alerts_severe, forecasts = algorithm.get_anomalies(
+            parsed,
+            kafka_bootstrap_servers=kafka_bootstrap_servers,
+            input_topic=input_topic,
+        )
+    else:
+        alerts_internal, alerts_severe = algorithm.get_anomalies(parsed)
+        forecasts = None
 
     # Write internal alerts
     query_internal = (
@@ -99,4 +105,23 @@ def run_dataflow(
         .outputMode(output_mode)
         .start()
     )
-    return query_internal, query_severe
+
+    # Write machine learning forecasts if generated
+    if forecasts is not None and output_topic_forecasts is not None:
+        query_forecast = (
+            forecasts
+            .selectExpr(
+                "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
+            )
+            .writeStream.format("kafka")
+            .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+            .option("topic", output_topic_forecasts)
+            .option(
+                "checkpointLocation",
+                os.path.join(checkpoint_location, "forecast_alerts"),
+            )
+            .outputMode(output_mode)
+            .start()
+        )
+
+    return query_internal, query_severe, query_forecast

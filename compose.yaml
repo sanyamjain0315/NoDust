@@ -142,14 +142,15 @@ services:
       SENSOR_TOPIC: site-sensor-raw
       INTERNAL_ALERTS_TOPIC: alerts_internal
       SEVERE_ALERTS_TOPIC: alerts_severe
+      FORECASTS_ALERTS_TOPIC: alerts_forecasts
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       POSTGRES_URI: "postgresql+psycopg2://postgres:password@postgres:5432/DB"
-      ALGORITHM: FuzzyThresholding
+      ALGORITHM: XGBoostForecasting
     command: >
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
       --num-executors 2
-      --executor-cores 1
+      --executor-cores 2
       --executor-memory 1G
       --driver-memory 512m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
