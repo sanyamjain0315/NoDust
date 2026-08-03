@@ -9,7 +9,6 @@ COPY requirements.txt /opt/spark-apps
 RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py /opt/spark-apps/main.py
 COPY system/ /opt/spark-apps/system/
-COPY .env /opt/spark-apps/.env
 ENV IVY_CACHE_DIR=/tmp \
     IVY_HOME=/tmp
 USER spark
