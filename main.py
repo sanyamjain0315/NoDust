@@ -2,14 +2,32 @@ import argparse
 import os
 import sys
 
+from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 
 from system import anomaly_dataflow, metrics_dataflow
 
+load_dotenv()
+
+access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
 
 def build_spark(appname: str) -> SparkSession:
     """Create the single shared SparkSession used by both streaming queries."""
-    spark = SparkSession.builder.appName(appname).getOrCreate()
+    spark = (
+        SparkSession.builder
+        .appName(appname)
+        .config("spark.executor.instances", "1")
+        .config("spark.executor.memory", "500m")
+        .config("spark.driver.memory", "500m")
+        .config("spark.executor.memoryOverhead", "1g")
+        .config(
+            "spark.jars.packages",
+            "com.amazonaws:aws-java-sdk:1.7.4, org.apache.hadoop:hadoop-aws:2.7.3",
+        )
+        .getOrCreate()
+    )
 
     # Suppressing logging
     spark.sparkContext.setLogLevel("WARN")
@@ -17,6 +35,27 @@ def build_spark(appname: str) -> SparkSession:
     log_manager = log4jLogger.LogManager
     logger = log_manager.getRootLogger()
     logger.setLevel(log4jLogger.Level.WARN)
+
+    spark._jsc.hadoopConfiguration().set(
+        "fs.s3a.awsAccessKeyId", access_key_id
+    )
+    spark._jsc.hadoopConfiguration().set(
+        "fs.s3a.awsSecretAccessKey", secret_access_key
+    )
+    spark._jsc.hadoopConfiguration().set(
+        "fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    )
+    spark._jsc.hadoopConfiguration().set(
+        "com.amazonaws.services.s3.enableV4", "true"
+    )
+    spark._jsc.hadoopConfiguration().set(
+        "fs.s3a.aws.credentials.provider",
+        "org.apache.hadoop.fs.s3a.BasicAWSCredentialsProvider",
+    )
+    spark._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "us-east-1.amazonaws.com"
+    )
+    spark._jsc.hadoopConfiguration().set("fs.s3.buffer.dir", "tmp")
 
     return spark
 
@@ -36,7 +75,7 @@ def main():
     )
     args = parser.parse_args()
 
-    BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+    BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     INPUT_TOPIC = os.getenv("SENSOR_TOPIC", "site-sensor-raw")
     OUTPUT_TOPIC_INTERNAL = os.getenv(
         "INTERNAL_ALERTS_TOPIC", "alerts_internal"

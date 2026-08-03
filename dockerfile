@@ -4,6 +4,21 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir pyyaml pandas pyarrow SQLAlchemy psycopg2-binary xgboost scikit-learn
-USER spark
 WORKDIR /opt/spark-apps
+COPY requirements.txt /opt/spark-apps
+RUN pip install --no-cache-dir -r requirements.txt
+COPY main.py /opt/spark-apps/main.py
+COPY system/ /opt/spark-apps/system/
+COPY .env /opt/spark-apps/.env
+ENV IVY_CACHE_DIR=/tmp \
+    IVY_HOME=/tmp
+USER spark
+ENTRYPOINT ["/opt/spark/bin/spark-submit", \
+    "--num-executors", "1", \
+    "--executor-cores", "1", \
+    "--executor-memory", "1G", \
+    "--driver-memory", "512m", \
+    "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1", \
+    "--conf", "spark.driver.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
+    "--conf", "spark.executor.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
+    "/opt/spark-apps/main.py", "--mode", "all"]

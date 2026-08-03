@@ -48,61 +48,6 @@ services:
       replicas: 1
     restart: unless-stopped
 
-  spark-master:
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    container_name: spark-master
-    environment:
-      SPARK_MODE: master
-    ports:
-      - "8080:8080"
-      - "7077:7077"
-      - "4040:4040"
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
-    volumes:
-      - nodust_spark_data:/opt/spark/work-dir
-
-  spark-worker-1:
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    container_name: spark-worker-1
-    environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 1500M
-      SPARK_WORKER_CORES: 3
-    ports:
-      - "8081:8081"
-    depends_on:
-      - spark-master
-    command: >
-        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
-        spark://spark-master:7077
-    volumes:
-      - nodust_spark_data:/opt/spark/work-dir
-
-  spark-worker-2:
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    container_name: spark-worker-2
-    environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
-      SPARK_WORKER_MEMORY: 1500M
-      SPARK_WORKER_CORES: 3
-    ports:
-      - "8082:8081"
-    depends_on:
-      - spark-master
-    command: >
-        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
-        spark://spark-master:7077
-    volumes:
-      - nodust_spark_data:/opt/spark/work-dir
-
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -127,12 +72,6 @@ services:
         condition: service_started
       sensor:
         condition: service_started
-      spark-master:
-        condition: service_started
-      spark-worker-1:
-        condition: service_started
-      spark-worker-2:
-        condition: service_started
     volumes:
       - ./system:/opt/spark-apps/system
       - ./main.py:/opt/spark-apps/main.py
@@ -145,17 +84,7 @@ services:
       FORECASTS_ALERTS_TOPIC: alerts_forecasts
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       POSTGRES_URI: "postgresql+psycopg2://postgres:password@postgres:5432/DB"
-      ALGORITHM: XGBoostForecasting
-    command: >
-      /opt/spark/bin/spark-submit
-      --master spark://spark-master:7077
-      --num-executors 2
-      --executor-cores 2
-      --executor-memory 1G
-      --driver-memory 512m
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1
-      --conf spark.driver.extraJavaOptions="-Divy.cache.dir=/tmp -Divy.home=/tmp"
-      /opt/spark-apps/main.py --mode all
+      ALGORITHM: Thresholding
 
   daily-rollup:
     image: postgres:16-alpine
