@@ -9,13 +9,25 @@ import json
 import logging
 import os
 import random
+import socket
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
 from kafka import KafkaProducer
 
-BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+if KAFKA_BOOTSTRAP_SERVERS is None:
+    logging.error(
+        "No env variable specified for KAFKA_BOOTSTRAP_SERVERS. Should be \
+        specified as <address>:<port>"
+    )
 TOPIC = os.getenv("KAFKA_TOPIC", "site-sensor-raw")
 
 NUM_SITES = int(os.getenv("NUM_SITES", "5"))
@@ -27,17 +39,33 @@ EVENT_TIMESTAMP_RATE_MS = int(
     os.getenv("EVENT_TIMESTAMP_RATE_MS", "900000")
 )  # In ms
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
 
-producer = KafkaProducer(
-    bootstrap_servers=BOOTSTRAP_SERVERS,
-    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-    retries=5,
-    linger_ms=10,
-)
+class MSKTokenProvider:
+    def token(self):
+        token, _ = MSKAuthTokenProvider.generate_auth_token("<my AWS Region>")
+        return token
+
+
+tp = MSKTokenProvider()
+
+if KAFKA_BOOTSTRAP_SERVERS.split(':')[0] in ["kafka", "localhost"]:
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        retries=5,
+        linger_ms=10,
+    )
+else:
+    producer = KafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        security_protocol="SASL_SSL",
+        sasl_mechanism="OAUTHBEARER",
+        sasl_oauth_token_provider=tp,
+        client_id=socket.gethostname(),
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        retries=5,
+        linger_ms=10,
+    )
 
 # Unit value by which any sensor metric will go up or down
 METRIC_MEAN = int(os.getenv("METRIC_MEAN", 0))
@@ -121,7 +149,7 @@ def jitter_sleep():
 
 
 def main():
-    logging.info(f"Starting sensor → {BOOTSTRAP_SERVERS}, topic={TOPIC}")
+    logging.info(f"Starting sensor → {KAFKA_BOOTSTRAP_SERVERS}, topic={TOPIC}")
     logging.info(f"Simulating {NUM_SITES} sites: {SITE_IDS}")
 
     # Initialize state tracker before starting the loop
@@ -135,6 +163,7 @@ def main():
         key_bytes = msg["site_id"].encode("utf-8")
         try:
             producer.send(TOPIC, key=key_bytes, value=msg)
+            producer.flush()
         except Exception as exc:
             logging.error(f"Kafka send failed: {exc}")
         if SLEEP_MS != 0 and STDDEV_MS != 0:

@@ -42,7 +42,7 @@ services:
       EVENT_TIMESTAMP_RATE_MS: 900000
       METRIC_MEAN: 0
       METRIC_STD_DEV: 5
-      TOPIC: site-sensor-raw
+      KAFKA_TOPIC: site-sensor-raw
     deploy:
       mode: replicated
       replicas: 1

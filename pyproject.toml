@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aws-msk-iam-sasl-signer-python>=1.0.2",
     "kafka-python>=2.3.2",
     "matplotlib>=3.10.9",
     "pandas>=3.0.3",

@@ -1,5 +1,5 @@
 FROM python:3.11-slim
 WORKDIR /app
 COPY sensor_simulator.py .
-RUN pip install kafka-python
+RUN pip install kafka-python>=2.3.2 aws-msk-iam-sasl-signer-python>=1.0.2
 CMD ["python", "sensor_simulator.py"]
