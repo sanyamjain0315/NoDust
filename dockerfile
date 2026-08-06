@@ -20,4 +20,4 @@ ENTRYPOINT ["/opt/spark/bin/spark-submit", \
     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1", \
     "--conf", "spark.driver.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
     "--conf", "spark.executor.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
-    "/opt/spark-apps/main.py", "--mode", "all"]
+    "/opt/spark-apps/main.py", "--mode", "anomaly"]

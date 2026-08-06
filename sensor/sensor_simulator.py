@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 A sensor simulation that emits JSON measurements to a Kafka topic.
 Simulates realistic pollution events (spikes) that start, sustain,
@@ -22,12 +21,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
+AWS_REGION = os.getenv("AWS_REGION")
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
-if KAFKA_BOOTSTRAP_SERVERS is None:
-    logging.error(
-        "No env variable specified for KAFKA_BOOTSTRAP_SERVERS. Should be \
-        specified as <address>:<port>"
-    )
+assert AWS_REGION != None
+assert KAFKA_BOOTSTRAP_SERVERS != None, "No env variable specified for KAFKA_BOOTSTRAP_SERVERS. Should be specified as <address>:<port>"
+
 TOPIC = os.getenv("KAFKA_TOPIC", "site-sensor-raw")
 
 NUM_SITES = int(os.getenv("NUM_SITES", "5"))
@@ -42,9 +40,12 @@ EVENT_TIMESTAMP_RATE_MS = int(
 
 class MSKTokenProvider:
     def token(self):
-        token, _ = MSKAuthTokenProvider.generate_auth_token("<my AWS Region>")
-        return token
-
+        # Ensure the returned value is a DICTIONARY, not just a string
+        token_str, expiry = MSKAuthTokenProvider.generate_auth_token(AWS_REGION)
+        return {
+            "access_token": token_str,
+            "expiry_sec": int(expiry) if isinstance(expiry, str) else expiry
+        }
 
 tp = MSKTokenProvider()
 
@@ -58,6 +59,7 @@ if KAFKA_BOOTSTRAP_SERVERS.split(':')[0] in ["kafka", "localhost"]:
 else:
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        api_version=(2,0,6),
         security_protocol="SASL_SSL",
         sasl_mechanism="OAUTHBEARER",
         sasl_oauth_token_provider=tp,
@@ -68,8 +70,8 @@ else:
     )
 
 # Unit value by which any sensor metric will go up or down
-METRIC_MEAN = int(os.getenv("METRIC_MEAN", 0))
-METRIC_STD_DEV = int(os.getenv("METRIC_STD_DEV", 1))
+METRIC_MEAN = int(os.getenv("METRIC_MEAN", "0"))
+METRIC_STD_DEV = int(os.getenv("METRIC_STD_DEV", "1"))
 
 POLLUTANTS = {
     "PM2.5": {
