@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from aws_msk_iam_sasl_signer import MSKAuthTokenProvider
 from kafka import KafkaProducer
+from kafka.oauth.abstract import AbstractTokenProvider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,7 +25,9 @@ logging.basicConfig(
 AWS_REGION = os.getenv("AWS_REGION")
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
 assert AWS_REGION != None
-assert KAFKA_BOOTSTRAP_SERVERS != None, "No env variable specified for KAFKA_BOOTSTRAP_SERVERS. Should be specified as <address>:<port>"
+assert KAFKA_BOOTSTRAP_SERVERS != None, (
+    "No env variable specified for KAFKA_BOOTSTRAP_SERVERS. Should be specified as <address>:<port>"
+)
 
 TOPIC = os.getenv("KAFKA_TOPIC", "site-sensor-raw")
 
@@ -33,23 +36,18 @@ SITE_IDS = [f"SITE_{i:02d}" for i in range(1, NUM_SITES + 1)]
 
 SLEEP_MS = int(os.getenv("SLEEP_MS", "800"))  # mean ms between msgs
 STDDEV_MS = int(os.getenv("SLEEP_STDDEV_MS", "200"))  # jitter
-EVENT_TIMESTAMP_RATE_MS = int(
-    os.getenv("EVENT_TIMESTAMP_RATE_MS", "900000")
-)  # In ms
+EVENT_TIMESTAMP_RATE_MS = int(os.getenv("EVENT_TIMESTAMP_RATE_MS", "900000"))  # In ms
 
 
-class MSKTokenProvider:
+class MSKTokenProvider(AbstractTokenProvider):
     def token(self):
-        # Ensure the returned value is a DICTIONARY, not just a string
-        token_str, expiry = MSKAuthTokenProvider.generate_auth_token(AWS_REGION)
-        return {
-            "access_token": token_str,
-            "expiry_sec": int(expiry) if isinstance(expiry, str) else expiry
-        }
+        token_str, _ = MSKAuthTokenProvider.generate_auth_token(AWS_REGION)
+        return token_str
+
 
 tp = MSKTokenProvider()
 
-if KAFKA_BOOTSTRAP_SERVERS.split(':')[0] in ["kafka", "localhost"]:
+if KAFKA_BOOTSTRAP_SERVERS.split(":")[0] in ["kafka", "localhost"]:
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -59,7 +57,6 @@ if KAFKA_BOOTSTRAP_SERVERS.split(':')[0] in ["kafka", "localhost"]:
 else:
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        api_version=(2,0,6),
         security_protocol="SASL_SSL",
         sasl_mechanism="OAUTHBEARER",
         sasl_oauth_token_provider=tp,
@@ -113,9 +110,7 @@ def update_site_concentration(site_id, pollutant):
     state = SENSOR_STATES[site_id][pollutant]
 
     # Changing the value by a few unit measurements
-    new_value = state["value"] + random.randint(
-        -METRIC_STD_DEV, METRIC_STD_DEV
-    )
+    new_value = state["value"] + random.randint(-METRIC_STD_DEV, METRIC_STD_DEV)
 
     # Clipping to min and max values
     if new_value < POLLUTANTS[pollutant]["min"]:
