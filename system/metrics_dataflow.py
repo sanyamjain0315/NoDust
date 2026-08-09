@@ -71,6 +71,7 @@ def run_dataflow(
     output_mode: Literal["append", "complete", "update"] = "update",
     checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
     spark: Optional[SparkSession] = None,
+    kafka_security_options: Optional[dict] = None,
 ) -> StreamingQuery:
     """
     Build and start the metrics streaming query.
@@ -80,10 +81,9 @@ def run_dataflow(
     awaiting termination so that multiple queries can run concurrently on
     the same SparkSession.
     """
+    kafka_security_options = kafka_security_options or {}
     if spark is None:
-        spark = (
-            SparkSession.builder.appName(appname).getOrCreate()
-        )
+        spark = SparkSession.builder.appName(appname).getOrCreate()
 
     # Supressing logging
     spark.sparkContext.setLogLevel("WARN")  # Options: WARN, ERROR, OFF
@@ -94,17 +94,16 @@ def run_dataflow(
 
     # Ingestion and processing from kafka topic
     df = (
-        spark.readStream
-        .format("kafka")
+        spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .options(**kafka_security_options)
         .option("subscribe", input_topic)
         .option("startingOffsets", "earliest")
         .load()
     )
 
     parsed = (
-        df
-        .selectExpr("CAST(value AS STRING)")
+        df.selectExpr("CAST(value AS STRING)")
         .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
         .select("data.*")
         .withColumn("event_time", col("timestamp").cast("timestamp"))
@@ -114,8 +113,7 @@ def run_dataflow(
 
     # Aggregation logic: 1-hour tumbling windows
     hourly_averages = (
-        parsed
-        .groupBy(
+        parsed.groupBy(
             window(col("event_time"), "1 hour").alias("time_window"),
             col("site_id"),
             col("pollutant_type"),
@@ -132,8 +130,7 @@ def run_dataflow(
 
     # Write stream to PostgreSQL using foreachBatch
     query = (
-        hourly_averages.writeStream
-        .outputMode(output_mode)
+        hourly_averages.writeStream.outputMode(output_mode)
         .foreachBatch(write_to_postgres)
         .option("checkpointLocation", checkpoint_location)
         .start()

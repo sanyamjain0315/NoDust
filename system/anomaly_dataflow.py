@@ -25,6 +25,7 @@ def run_dataflow(
     output_mode: Literal["append", "complete", "update"] = "append",
     checkpoint_location: os.PathLike | str = "/tmp/checkpoints",
     spark: Optional[SparkSession] = None,
+    kafka_security_options: Optional[dict] = None,
 ) -> Tuple[StreamingQuery, StreamingQuery, Optional[StreamingQuery]]:
     """
     Build and start the anomaly streaming query.
@@ -34,6 +35,7 @@ def run_dataflow(
     awaiting termination so that multiple queries can run concurrently on
     the same SparkSession.
     """
+    kafka_security_options = kafka_security_options or {}
     # Connecting to spark session
     if spark is None:
         spark = SparkSession.builder.appName(appname).getOrCreate()
@@ -44,17 +46,16 @@ def run_dataflow(
     algorithm = Algorithm(config_path="system/thresholds.yaml")
 
     df = (
-        spark.readStream
-        .format("kafka")
+        spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .options(**kafka_security_options)
         .option("subscribe", input_topic)
         .option("startingOffsets", "earliest")
         .load()
     )
 
     parsed = (
-        df
-        .selectExpr("CAST(value AS STRING)")
+        df.selectExpr("CAST(value AS STRING)")
         .select(from_json(col("value"), SENSOR_SCHEMA).alias("data"))
         .select("data.*")
         .withColumn("event_time", col("timestamp").cast("timestamp"))
@@ -74,12 +75,12 @@ def run_dataflow(
 
     # Write internal alerts
     query_internal = (
-        alerts_internal
-        .selectExpr(
+        alerts_internal.selectExpr(
             "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
         )
         .writeStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .options(**kafka_security_options)
         .option("topic", output_topic_internal)
         .option(
             "checkpointLocation",
@@ -91,12 +92,12 @@ def run_dataflow(
 
     # Write severe alerts
     query_severe = (
-        alerts_severe
-        .selectExpr(
+        alerts_severe.selectExpr(
             "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
         )
         .writeStream.format("kafka")
         .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+        .options(**kafka_security_options)
         .option("topic", output_topic_severe)
         .option(
             "checkpointLocation",
@@ -109,12 +110,12 @@ def run_dataflow(
     # Write machine learning forecasts if generated
     if forecasts is not None and output_topic_forecasts is not None:
         query_forecast = (
-            forecasts
-            .selectExpr(
+            forecasts.selectExpr(
                 "CAST(site_id AS STRING) AS key", "to_json(struct(*)) AS value"
             )
             .writeStream.format("kafka")
             .option("kafka.bootstrap.servers", kafka_bootstrap_servers)
+            .options(**kafka_security_options)
             .option("topic", output_topic_forecasts)
             .option(
                 "checkpointLocation",

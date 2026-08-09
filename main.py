@@ -12,12 +12,18 @@ load_dotenv()
 access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 
+KAFKA_SECURITY_OPTIONS = {
+    "kafka.security.protocol": "SASL_SSL",
+    "kafka.sasl.mechanism": "AWS_MSK_IAM",
+    "kafka.sasl.jaas.config": "software.amazon.msk.auth.iam.IAMLoginModule required;",
+    "kafka.sasl.client.callback.handler.class": "software.amazon.msk.auth.iam.IAMClientCallbackHandler",
+}
+
 
 def build_spark(appname: str) -> SparkSession:
     """Create the single shared SparkSession used by both streaming queries."""
     spark = (
-        SparkSession.builder
-        .appName(appname)
+        SparkSession.builder.appName(appname)
         .config("spark.executor.instances", "1")
         .config("spark.executor.memory", "500m")
         .config("spark.driver.memory", "500m")
@@ -36,25 +42,17 @@ def build_spark(appname: str) -> SparkSession:
     logger = log_manager.getRootLogger()
     logger.setLevel(log4jLogger.Level.WARN)
 
-    spark._jsc.hadoopConfiguration().set(
-        "fs.s3a.awsAccessKeyId", access_key_id
-    )
-    spark._jsc.hadoopConfiguration().set(
-        "fs.s3a.awsSecretAccessKey", secret_access_key
-    )
+    spark._jsc.hadoopConfiguration().set("fs.s3a.awsAccessKeyId", access_key_id)
+    spark._jsc.hadoopConfiguration().set("fs.s3a.awsSecretAccessKey", secret_access_key)
     spark._jsc.hadoopConfiguration().set(
         "fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
     )
-    spark._jsc.hadoopConfiguration().set(
-        "com.amazonaws.services.s3.enableV4", "true"
-    )
+    spark._jsc.hadoopConfiguration().set("com.amazonaws.services.s3.enableV4", "true")
     spark._jsc.hadoopConfiguration().set(
         "fs.s3a.aws.credentials.provider",
         "org.apache.hadoop.fs.s3a.BasicAWSCredentialsProvider",
     )
-    spark._jsc.hadoopConfiguration().set(
-        "fs.s3a.endpoint", "us-east-1.amazonaws.com"
-    )
+    spark._jsc.hadoopConfiguration().set("fs.s3a.endpoint", "us-east-1.amazonaws.com")
     spark._jsc.hadoopConfiguration().set("fs.s3.buffer.dir", "tmp")
 
     return spark
@@ -77,13 +75,9 @@ def main():
 
     BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     INPUT_TOPIC = os.getenv("SENSOR_TOPIC", "site-sensor-raw")
-    OUTPUT_TOPIC_INTERNAL = os.getenv(
-        "INTERNAL_ALERTS_TOPIC", "alerts_internal"
-    )
+    OUTPUT_TOPIC_INTERNAL = os.getenv("INTERNAL_ALERTS_TOPIC", "alerts_internal")
     OUTPUT_TOPIC_SEVERE = os.getenv("SEVERE_ALERTS_TOPIC", "alerts_severe")
-    OUTPUT_TOPIC_FORECASTS = os.getenv(
-        "FORECASTS_ALERTS_TOPIC", "alerts_forecasts"
-    )
+    OUTPUT_TOPIC_FORECASTS = os.getenv("FORECASTS_ALERTS_TOPIC", "alerts_forecasts")
     ALGORITHM = os.getenv("ALGORITHM", "Thresholding")
 
     mode = args.mode
@@ -139,9 +133,7 @@ def main():
 
     # --- Single-dataflow modes ---
     spark = build_spark(
-        "SensorMetricsAggregation"
-        if mode == "metrics"
-        else "SensorAnomalyDetection"
+        "SensorMetricsAggregation" if mode == "metrics" else "SensorAnomalyDetection"
     )
 
     if mode == "metrics":

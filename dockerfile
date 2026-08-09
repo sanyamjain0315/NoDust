@@ -17,7 +17,7 @@ ENTRYPOINT ["/opt/spark/bin/spark-submit", \
     "--executor-cores", "1", \
     "--executor-memory", "1G", \
     "--driver-memory", "512m", \
-    "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1", \
+    "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,software.amazon.msk:aws-msk-iam-auth:2.2.0", \
     "--conf", "spark.driver.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
     "--conf", "spark.executor.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
     "/opt/spark-apps/main.py", "--mode", "anomaly"]
