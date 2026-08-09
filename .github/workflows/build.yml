@@ -5,7 +5,7 @@ on:
     branches:
       - cloud-deployment
     paths-ignore:
-      - 'README.md'
+      - "README.md"
 
 permissions:
   id-token: write
@@ -63,7 +63,6 @@ jobs:
           echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY
             :$IMAGE_TAG"
 
-
   Continuous-Deployment:
     needs: build-and-push-ecr-image
     runs-on: self-hosted
@@ -84,13 +83,21 @@ jobs:
 
       - name: Pull latest images
         run: |
-         docker pull ${{secrets.AWS_ECR_LOGIN_URI}}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
+          docker pull ${{secrets.AWS_ECR_LOGIN_URI}}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
+
+      - name: Remove existing container
+        run: |
+          docker rm -f spark-nodust || true
 
       - name: Run Docker Image to serve users
         run: |
-         docker run --name=spark-nodust --network host -e 'AWS_REGION=${{ secrets.AWS_REGION }}' -e 'KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}' -e 'ALGORITHM=${{ secrets.ALGORITHM }}' ${{secrets.AWS_ECR_LOGIN_URI}}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
+          docker run -d --name=spark-nodust --network host --restart unless-stopped \
+          -e 'AWS_REGION=${{ secrets.AWS_REGION }}' \
+          -e 'KAFKA_BOOTSTRAP_SERVERS=${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}' \
+          -e 'ALGORITHM=${{ secrets.ALGORITHM }}' \
+          ${{secrets.AWS_ECR_LOGIN_URI}}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
 
       - name: Clean previous images and containers
         run: |
-         docker container prune -f --filter "until=1h"
-         docker image prune -f
+          docker container prune -f --filter "until=1h"
+          docker image prune -f

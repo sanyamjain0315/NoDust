@@ -80,6 +80,7 @@ def main():
             # multiple streaming queries against the same SparkSession.
             checkpoint_location="/tmp/checkpoints/metrics",
             spark=spark,
+            kafka_security_options=KAFKA_SECURITY_OPTIONS,
         )
 
         print(f"Starting Anomaly Dataflow using {ALGORITHM} algorithm...")
@@ -97,6 +98,7 @@ def main():
             algorithm_str=ALGORITHM,
             checkpoint_location="/tmp/checkpoints/anomaly",
             spark=spark,
+            kafka_security_options=KAFKA_SECURITY_OPTIONS,
         )
 
         try:
@@ -129,6 +131,7 @@ def main():
             input_topic=INPUT_TOPIC,
             checkpoint_location="/tmp/checkpoints/metrics",
             spark=spark,
+            kafka_security_options=KAFKA_SECURITY_OPTIONS,
         )
         try:
             query.awaitTermination()
@@ -148,6 +151,7 @@ def main():
             algorithm_str=ALGORITHM,
             checkpoint_location="/tmp/checkpoints/anomaly",
             spark=spark,
+            kafka_security_options=KAFKA_SECURITY_OPTIONS,
         )
         try:
             spark.streams.awaitAnyTermination()
