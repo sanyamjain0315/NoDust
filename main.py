@@ -24,10 +24,6 @@ def build_spark(appname: str) -> SparkSession:
     """Create the single shared SparkSession used by both streaming queries."""
     spark = (
         SparkSession.builder.appName(appname)
-        .config("spark.executor.instances", "1")
-        .config("spark.executor.memory", "500m")
-        .config("spark.driver.memory", "500m")
-        .config("spark.executor.memoryOverhead", "1g")
         .config(
             "spark.jars.packages",
             "com.amazonaws:aws-java-sdk:1.7.4, org.apache.hadoop:hadoop-aws:2.7.3",
