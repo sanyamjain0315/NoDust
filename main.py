@@ -9,9 +9,6 @@ from system import anomaly_dataflow, metrics_dataflow
 
 load_dotenv()
 
-access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-
 KAFKA_SECURITY_OPTIONS = {
     "kafka.security.protocol": "SASL_SSL",
     "kafka.sasl.mechanism": "AWS_MSK_IAM",
@@ -38,18 +35,10 @@ def build_spark(appname: str) -> SparkSession:
     logger = log_manager.getRootLogger()
     logger.setLevel(log4jLogger.Level.WARN)
 
-    spark._jsc.hadoopConfiguration().set("fs.s3a.awsAccessKeyId", access_key_id)
-    spark._jsc.hadoopConfiguration().set("fs.s3a.awsSecretAccessKey", secret_access_key)
-    spark._jsc.hadoopConfiguration().set(
-        "fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    )
-    spark._jsc.hadoopConfiguration().set("com.amazonaws.services.s3.enableV4", "true")
     spark._jsc.hadoopConfiguration().set(
         "fs.s3a.aws.credentials.provider",
-        "org.apache.hadoop.fs.s3a.BasicAWSCredentialsProvider",
+        "com.amazonaws.auth.InstanceProfileCredentialsProvider",
     )
-    spark._jsc.hadoopConfiguration().set("fs.s3a.endpoint", "us-east-1.amazonaws.com")
-    spark._jsc.hadoopConfiguration().set("fs.s3.buffer.dir", "tmp")
 
     return spark
 
