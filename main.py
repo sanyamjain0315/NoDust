@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+import boto3
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 
@@ -43,6 +44,19 @@ def build_spark(appname: str) -> SparkSession:
     return spark
 
 
+def get_bootstrap_servers():
+    ssm = boto3.client(
+        "ssm", region_name=os.getenv("AWS_REGION", "ap-south-1")
+    )
+    try:
+        parameter = ssm.get_parameter(Name="/kafka/bootstrap_servers")
+        return parameter["Parameter"]["Value"]
+    except ClientError as e:
+        # Fallback to default if SSM fails (useful for local dev)
+        print(f"Error fetching from SSM: {e}")
+        return "localhost:9092"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Running pyspark dataflows")
 
@@ -58,7 +72,7 @@ def main():
     )
     args = parser.parse_args()
 
-    BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    BOOTSTRAP_SERVERS = get_bootstrap_servers()
     INPUT_TOPIC = os.getenv("SENSOR_TOPIC", "site-sensor-raw")
     OUTPUT_TOPIC_INTERNAL = os.getenv("INTERNAL_ALERTS_TOPIC", "alerts_internal")
     OUTPUT_TOPIC_SEVERE = os.getenv("SEVERE_ALERTS_TOPIC", "alerts_severe")

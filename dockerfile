@@ -14,7 +14,7 @@ ENV IVY_CACHE_DIR=/tmp \
 USER spark
 ENTRYPOINT ["/opt/spark/bin/spark-submit", \
     "--master", "local[2]", \
-    "--driver-memory", "4g", \
+    "--driver-memory", "2g", \
     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1,software.amazon.msk:aws-msk-iam-auth:2.3.7", \
     "--conf", "spark.driver.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \
     "--conf", "spark.executor.extraJavaOptions=-Divy.cache.dir=/tmp -Divy.home=/tmp", \

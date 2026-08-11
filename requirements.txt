@@ -6,3 +6,4 @@ psycopg2-binary
 xgboost
 scikit-learn
 python-dotenv>=1.2.2
+boto3
