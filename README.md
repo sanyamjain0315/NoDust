@@ -58,28 +58,8 @@ The system consists of multiple pluggable detection algorithms ranging from simp
 
 ## Architecture
 
-```text
-┌──────────────┐     ┌─────────┐     ┌──────────────────────────────────────────────┐
-│  Sensor      │────▶│  Kafka  │────▶│  Spark Structured Streaming (PySpark)        │
-│  Simulator   │     │ Topic:  │     │                                              │
-│ (simulated)  │     │ site-   │     │  ┌─────────────────┐  ┌────────────────────┐ │
-└──────────────┘     │ sensor- │     │  │ Metrics Dataflow│  │ Anomaly Dataflow   │ │
-                     │ raw     │     │  │ (hourly avg)    │  │ (algorithm-based)  │ │
-                     └─────────┘     │  └────────┬────────┘  └─────────┬──────────┘ │
-                                     │           │                     │            │
-                                     │           ▼                     ▼            │
-                                     │    ┌─────────────┐    ┌──────────────────┐   │
-                                     │    │ PostgreSQL  │    │ Kafka Alert Topics│  │
-                                     │    │ (hourly avg)│    │ • alerts_internal │  │
-                                     │    └─────────────┘    │ • alerts_severe   │  │
-                                     │           │           │ • alerts_forecasts│  │
-                                     │           ▼           └──────────────────┘   │
-                                     │    ┌─────────────┐                           │
-                                     │    │ Daily Rollup│                           │
-                                     │    │ (cron job)  │                           │
-                                     │    └─────────────┘                           │
-                                     └──────────────────────────────────────────────┘
-```
+![NoDust Architecture](./material/nodust-architecture.png)
+
 
 ### Components
 
